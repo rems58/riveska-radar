@@ -10,6 +10,25 @@ export const SIGNAUX_DOULEUR: string[] = [
   'app abgelehnt', 'ablehnung app store',
   'app rechazada', 'rechazada por apple',
   'app rifiutata', 'rifiutata da apple',
+  // Rejets en prose naturelle (pas un titre templater) : SIGNAUX_DOULEUR n'attrapait
+  // que des phrases figees ("app rejected"), pas la facon dont les gens racontent
+  // vraiment un rejet. Verifie sur 22 posts Reddit reels (recherche "app rejected",
+  // 2026-08-19) : 2 prospects authentiques manques - "Initially got rejected due to
+  // privacy policy violation... reviewer rejected it" et "i am guessing this is
+  // reason for rejection" (titre : "... rejection in app store") - aucune phrase
+  // figee existante ne les couvrait. Les 4 phrases anglaises ci-dessous sont
+  // reprises MOT POUR MOT de ces posts reels, pas inventees.
+  'got rejected due to', 'reviewer rejected', 'reason for rejection', 'rejection in app store',
+  // Traductions directes de "rejected due to" / "reason for rejection" (les deux
+  // concepts les plus generalisables ci-dessus) dans les 4 autres langues -
+  // ANALOGIES LINGUISTIQUES, pas verifiees sur des posts reels dans ces langues
+  // (aucun poste reel collecte en dehors de l'anglais a ce jour). A ce stade du
+  // produit, un faux positif de plus coute moins qu'un prospect manque (le
+  // doublement de score sur recidive et le scoring LLM en aval absorbent le bruit).
+  'rejetee a cause de', 'motif du rejet',
+  'abgelehnt wegen', 'grund der ablehnung',
+  'rechazada debido a', 'motivo del rechazo',
+  'rifiutata a causa di', 'motivo del rifiuto',
   // Testeurs Google Play
   '12 testers', '20 testers', 'closed testing', 'testers requirement',
   '12 testeurs', '20 testeurs', 'test ferme',

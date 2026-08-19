@@ -91,4 +91,37 @@ describe('prefiltrer', () => {
     const p = post({ titre: 'FYI guideline 4.35 was updated, nothing about my case here' })
     expect(prefiltrer([p], 30)).toHaveLength(0)
   })
+
+  describe('prose naturelle (regression sur 2 prospects reels manques, Reddit, 2026-08-19)', () => {
+    // Texte repris mot pour mot des posts reels qui ont motive l'ajout de nouveaux
+    // signaux : SIGNAUX_DOULEUR n'attrapait que des phrases figees ("app rejected"),
+    // pas la facon dont les gens racontent vraiment un rejet.
+    it('garde un rejet raconte en prose ("got rejected due to")', () => {
+      const p = post({
+        titre: 'Play Store App Appeals- how long do they take?',
+        contenu:
+          'Submitted an app to play store. Initially got rejected due to privacy policy violation, ' +
+          're-submitted after making corrections Now, reviewer rejected it but this time attaching ' +
+          'screenshot of earlier version',
+      })
+      expect(prefiltrer([p], 30)).toHaveLength(1)
+    })
+
+    it('garde un rejet raconte en prose ("reason for rejection")', () => {
+      const p = post({
+        titre: 'Any one faced "design spam" rejection in app store.',
+        contenu:
+          'I have a gaming app submitted for review has a slot machine component in it, ' +
+          'i am guessing this is reason for rejection. They have not mentioned exactly what is spam.',
+      })
+      expect(prefiltrer([p], 30)).toHaveLength(1)
+    })
+
+    it('les traductions FR/DE/ES/IT de "rejete a cause de"/"motif du rejet" fonctionnent aussi', () => {
+      expect(prefiltrer([post({ titre: 'Mon app rejetee a cause de la politique de confidentialite' })], 30)).toHaveLength(1)
+      expect(prefiltrer([post({ titre: 'App abgelehnt wegen Datenschutzrichtlinie' })], 30)).toHaveLength(1)
+      expect(prefiltrer([post({ titre: 'Mi app rechazada debido a la politica de privacidad' })], 30)).toHaveLength(1)
+      expect(prefiltrer([post({ titre: 'App rifiutata a causa della privacy policy' })], 30)).toHaveLength(1)
+    })
+  })
 })
