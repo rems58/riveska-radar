@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
-import { acquerirVerrou, libererVerrou, verrouActif } from '../src/verrou.ts'
+import { acquerirVerrou, libererVerrou, verrouActif, rafraichirVerrou } from '../src/verrou.ts'
 
 const DUREE_MAX_MS = 60_000
 
@@ -90,6 +90,62 @@ describe('acquerirVerrou / libererVerrou', () => {
       expect(resultats.filter((r) => r === 'true')).toHaveLength(1)
     }
   }, 30_000)
+
+  it('ne supprime pas un verrou repris entre-temps par un autre process (pid different)', () => {
+    // Simule le scenario du Fix 6 : A a acquis puis un autre process (B, ou un test)
+    // a repose le fichier avec un pid different (B l'a juge perime a tort et l'a pris).
+    // Si A appelle libererVerrou sans verifier, il supprimerait le verrou de B.
+    dossier = mkdtempSync(path.join(tmpdir(), 'radar-verrou-'))
+    const v = cheminVerrou()
+    const pidEtranger = process.pid + 1
+    writeFileSync(v, JSON.stringify({ pid: pidEtranger, horodatage: Date.now() }))
+
+    libererVerrou(v)
+
+    expect(existsSync(v)).toBe(true)
+    const contenu = JSON.parse(readFileSync(v, 'utf8')) as { pid: number }
+    expect(contenu.pid).toBe(pidEtranger)
+  })
+
+  it('supprime normalement un verrou qui nous appartient toujours (meme pid)', () => {
+    dossier = mkdtempSync(path.join(tmpdir(), 'radar-verrou-'))
+    const v = cheminVerrou()
+    writeFileSync(v, JSON.stringify({ pid: process.pid, horodatage: Date.now() }))
+
+    libererVerrou(v)
+
+    expect(existsSync(v)).toBe(false)
+  })
+})
+
+describe('rafraichirVerrou', () => {
+  it('met a jour l horodatage sans changer le proprietaire (meme pid)', () => {
+    dossier = mkdtempSync(path.join(tmpdir(), 'radar-verrou-'))
+    const v = cheminVerrou()
+    writeFileSync(v, JSON.stringify({ pid: process.pid, horodatage: Date.now() - 1_000_000 }))
+
+    rafraichirVerrou(v)
+
+    const contenu = JSON.parse(readFileSync(v, 'utf8')) as { pid: number; horodatage: number }
+    expect(contenu.pid).toBe(process.pid)
+    expect(Date.now() - contenu.horodatage).toBeLessThan(5000)
+  })
+
+  it('empeche un verrou d etre juge perime alors que le run tourne toujours plus longtemps que dureeMaxMs', () => {
+    // Reproduit le scenario mesure : un run legitime depasse dureeMaxMs (LLM lent),
+    // mais tant qu'il rafraichit periodiquement, un nouvel appelant ne doit jamais
+    // pouvoir le juger perime et l'evincer.
+    dossier = mkdtempSync(path.join(tmpdir(), 'radar-verrou-'))
+    const v = cheminVerrou()
+    const dureeMaxCourte = 1000
+    writeFileSync(v, JSON.stringify({ pid: process.pid, horodatage: Date.now() - 10_000 })) // deja "perime"
+    expect(verrouActif(v, dureeMaxCourte)).toBe(false)
+
+    rafraichirVerrou(v)
+
+    expect(verrouActif(v, dureeMaxCourte)).toBe(true)
+    expect(acquerirVerrou(v, dureeMaxCourte)).toBe(false)
+  })
 })
 
 describe('verrouActif', () => {

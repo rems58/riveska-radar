@@ -98,14 +98,64 @@ export function acquerirVerrou(cheminVerrou: string, dureeMaxMs: number): boolea
   // (crash, machine redemarree, JSON corrompu).
   if (verrouActif(cheminVerrou, dureeMaxMs)) return false
 
-  // Verrou perime : on le retire et on retente une seule fois. Si un autre process
-  // fait le meme nettoyage au meme moment, la creation exclusive departage.
-  libererVerrou(cheminVerrou)
+  // Verrou perime : on le retire et on retente une seule fois. Suppression SANS
+  // verification de pid (contrairement a libererVerrou) : on vient justement de
+  // constater via verrouActif() que ce verrou appartient a un process mort ou trop
+  // vieux, donc PAS le notre par definition - la verification d'appartenance de
+  // libererVerrou (Fix 6) bloquerait ce nettoyage legitime a tort. Si un autre
+  // process fait le meme nettoyage au meme moment, la creation exclusive departage.
+  try {
+    unlinkSync(cheminVerrou)
+  } catch {
+    // Deja absent (l'autre process a gagne la course du nettoyage) : tenterCreation va trancher.
+  }
   return tenterCreation(cheminVerrou)
 }
 
-/** Ne leve jamais : liberer un verrou deja absent (double appel, nettoyage manuel) est sans consequence. */
+/**
+ * Reecrit l'horodatage du verrou (meme pid) pendant qu'un run est en cours, pour
+ * qu'il ne paraisse jamais perime tant que le process qui le detient tourne encore.
+ * Sans cela, un run legitimement plus long que dureeMaxMs (mesure : OpenRouter lent
+ * -> 2 appels x 60s de timeout x 20 candidats = 40 min, largement au-dela des 20 min
+ * de DUREE_MAX_VERROU_MS) se ferait voler son verrou par un nouveau run qui le juge
+ * perime, alors qu'il tourne toujours - exactement le chevauchement que le verrou
+ * doit empecher. A appeler periodiquement (setInterval) depuis l'appelant, avec un
+ * intervalle nettement plus court que dureeMaxMs.
+ */
+export function rafraichirVerrou(cheminVerrou: string): void {
+  try {
+    writeFileSync(cheminVerrou, JSON.stringify({ pid: process.pid, horodatage: Date.now() } satisfies ContenuVerrou))
+  } catch (err) {
+    // Rafraichissement rate (ex: dossier temporairement inaccessible) : pas fatal,
+    // le prochain tick reessaiera. Ne jamais faire planter le run pour ca.
+    console.warn(`[radar] verrou : echec de rafraichissement de ${cheminVerrou} - ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/**
+ * Ne leve jamais : liberer un verrou deja absent (double appel, nettoyage manuel)
+ * est sans consequence.
+ *
+ * Verifie d'ABORD que le fichier nous appartient encore (meme pid) avant de le
+ * supprimer. Sans cette verification : A acquiert, A tourne plus de dureeMaxMs (mais
+ * tourne toujours), B le juge perime et l'acquiert a son tour (A et B tournent en
+ * parallele - deja un probleme), PUIS A termine et supprime aveuglement le fichier -
+ * qui est maintenant celui de B. Un troisieme process C peut alors l'acquerir alors
+ * que B tourne encore. La verification de pid rend cette suppression sans effet
+ * (elle refuse de supprimer un verrou qui ne nous appartient plus) : elle ne resout
+ * pas a elle seule le premier chevauchement A/B (c'est rafraichirVerrou qui l'evite
+ * en empechant le verrou de A de paraitre perime), mais elle empeche le deuxieme
+ * chevauchement B/C, strictement pire puisqu'il se reproduirait a chaque cycle.
+ */
 export function libererVerrou(cheminVerrou: string): void {
+  const contenu = lire(cheminVerrou)
+  if (contenu && contenu.pid !== process.pid) {
+    console.warn(
+      `[radar] verrou : ${cheminVerrou} appartient desormais au pid ${contenu.pid} (pas le notre, ${process.pid}) ` +
+        `- probablement repris apres avoir ete juge perime a tort. Je ne le supprime pas.`,
+    )
+    return
+  }
   try {
     unlinkSync(cheminVerrou)
   } catch {
