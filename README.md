@@ -14,12 +14,11 @@ de commentaire a la place de quelqu'un.
 
 ## Sources surveillees
 
-- Reddit (API officielle, plusieurs subreddits dev mobile)
 - Hacker News
 - Stack Overflow
+- Mastodon
 - Bluesky (necessite `BLUESKY_ID`/`BLUESKY_APP_PASSWORD`, facultatifs - voir tableau
   ci-dessous ; sans eux, la source se desactive proprement)
-- Mastodon
 - Annonces Apple/Google elles-memes (`jobs/triggers.ts`, flux distinct des sources
   ci-dessus - detecte une nouvelle exigence de publication avant qu'elle ne deborde
   en vague de questions)
@@ -29,6 +28,16 @@ recherche de posts publics accessible a un outil tiers. La seule facon d'y detec
 prospects serait de scraper les pages, ce qui viole leurs conditions d'utilisation et
 expose le compte utilise a un bannissement pur et simple. Le risque (perte du compte,
 image degradee) depasse largement la valeur d'une source supplementaire.
+
+**Reddit n'est plus une source active : l'API a ferme la creation d'applications en
+libre-service.** Verifie en appel reel (2026-08-19) : `reddit.com/prefs/apps` refuse la
+creation, `/new.json` et `/search.json` renvoient 403 meme avec un user-agent de
+navigateur, et Reddit exige desormais une approbation ecrite explicite pour tout usage
+commercial - ce que ce radar est. La source reste dans le code (`src/collectors/reddit.ts`,
+facultative comme Bluesky, `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`/`REDDIT_USER_AGENT`
+dans `.env`) : si un accord Reddit arrive un jour, coller les cles suffit a la reveiller,
+aucun autre changement necessaire. Sans elles, `collecteursParDefaut()` exclut Reddit de
+la liste des sources plutot que d'echouer au demarrage.
 
 **Un flux "forums" (forums.expo.dev + developer.apple.com/forums) a existe puis a ete
 retire.** Verifie en appel reel : les deux flux sont morts - Expo redirige entierement
@@ -57,15 +66,14 @@ Node 24 execute directement les fichiers `.ts` (aucune compilation ni ts-node ne
 
 | Variable | Ou l'obtenir |
 |---|---|
-| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) - creer une application de type **script**. L'ID est sous le nom de l'app, le secret est le champ "secret". |
-| `REDDIT_USER_AGENT` | Chaine libre, format recommande `riveska-radar/0.1 by /u/TonPseudo` (Reddit bannit les user-agents generiques). |
 | `TELEGRAM_BOT_TOKEN` | Parler a [@BotFather](https://t.me/BotFather) sur Telegram, `/newbot`, suivre les instructions. Le token est renvoye a la fin. |
 | `TELEGRAM_CHAT_ID` | Envoyer un premier message au bot cree, puis appeler `https://api.telegram.org/bot<TOKEN>/getUpdates` dans un navigateur : le `chat.id` apparait dans la reponse JSON. |
 | `GOOGLE_SA_EMAIL` / `GOOGLE_SA_PRIVATE_KEY` | Dans un projet Google Cloud (nommer le projet `riveska`) : IAM & Admin > Comptes de service > Creer > generer une cle JSON. `email` et `private_key` viennent de ce fichier JSON. **`GOOGLE_SA_PRIVATE_KEY` DOIT etre entre guillemets doubles**, tel quel sur une seule ligne, `\n` litteraux (pas de vrais retours a la ligne) - exemple exact : `GOOGLE_SA_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvQ...\n-----END PRIVATE KEY-----\n"`. **Sans les guillemets, la valeur est coupee au premier retour a la ligne** (mesure : 27 caracteres au lieu de ~1700, `BEGIN` present mais `END` absent) et devient invalide sans qu'aucune erreur ne le signale au moment de coller - `config.ts` bloque desormais au demarrage avec un message explicite si `BEGIN`/`END` sont absents apres lecture, mais autant l'eviter directement. **Il faut aussi activer l'API Google Sheets** sur ce meme projet (API et services > Activer des API > "Google Sheets API"), sinon toute requete echoue avec une erreur 403. |
 | `SHEET_ID` | L'identifiant dans l'URL du Google Sheet : `https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit`. Le Sheet doit exister au prealable. |
 | (partage du Sheet) | **Partager le Sheet en acces Editeur avec l'email du compte de service** (`GOOGLE_SA_EMAIL`, ex. `xxx@riveska.iam.gserviceaccount.com`). Sans ce partage, toutes les ecritures/lectures echouent silencieusement (voir Depannage). |
 | `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys), creer une cle. |
-| `BLUESKY_ID` / `BLUESKY_APP_PASSWORD` | **Facultatifs.** Reglages Bluesky > Confidentialite et securite > Mots de passe d'application > en creer un (gratuit, jamais le mot de passe du compte lui-meme). `BLUESKY_ID` est ton identifiant (`toi.bsky.social`). Necessaires depuis que la recherche Bluesky non authentifiee est fermee (verifie : 403 sur l'endpoint public). Absents ou incomplets -> la source Bluesky se desactive proprement (log explicite, aucune erreur), les cinq autres sources continuent normalement. |
+| `BLUESKY_ID` / `BLUESKY_APP_PASSWORD` | **Facultatifs.** Reglages Bluesky > Confidentialite et securite > Mots de passe d'application > en creer un (gratuit, jamais le mot de passe du compte lui-meme). `BLUESKY_ID` est ton identifiant (`toi.bsky.social`). Necessaires depuis que la recherche Bluesky non authentifiee est fermee (verifie : 403 sur l'endpoint public). Absents ou incomplets -> la source Bluesky se desactive proprement (log explicite, aucune erreur), les autres sources continuent normalement. |
+| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` / `REDDIT_USER_AGENT` | **Facultatifs, source actuellement injoignable.** [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) refuse desormais la creation d'applications de type **script** sans accord ecrit prealable (usage commercial). Si un accord arrive un jour : l'ID est sous le nom de l'app, le secret est le champ "secret", `REDDIT_USER_AGENT` est une chaine libre type `riveska-radar/0.1 by /u/TonPseudo`. Absents -> la source Reddit se desactive proprement (log explicite au demarrage), les autres sources continuent normalement. |
 
 ## Commandes npm
 
@@ -93,8 +101,9 @@ manuel, CI) n'est jamais ecrasee par le contenu du `.env`.
 Chaque commande pose un verrou de process (fichier `<commande>.lock` a la racine, ex.
 `radar.lock`) pendant son execution et le libere en fin de run. Si le run precedent de la
 meme commande tourne encore (radar est relance toutes les 15 minutes par le Planificateur
-et peut legitimement prendre plus longtemps : ~40 appels Reddit sequentiels + jusqu'a 2
-appels LLM par candidat), le nouveau lancement s'arrete immediatement avec un avertissement
+et peut legitimement prendre plus longtemps : jusqu'a 2 appels LLM par candidat, plus
+~40 appels Reddit sequentiels si cette source redevient un jour active), le nouveau
+lancement s'arrete immediatement avec un avertissement
 plutot que de scorer/facturer deux fois les memes posts. Un verrou dont le process n'existe
 plus (crash, redemarrage) est automatiquement considere perime au lancement suivant - il
 n'y a jamais besoin de le supprimer a la main. Le verrou se rafraichit automatiquement
@@ -114,17 +123,20 @@ qui exposent une API publique adaptee :
 
 | Source | Suivi 48h |
 |---|---|
-| Reddit | oui (nombre de commentaires via l'endpoint JSON public du post) |
 | Hacker News | oui (enfants directs de l'item, API Algolia) |
 | Stack Overflow | oui (`answer_count`, API StackExchange) |
 | Bluesky | non |
 | Mastodon | non |
+| Reddit | non applicable - source desactivee (voir "Sources surveillees") |
 
 Bluesky et Mastodon n'exposent pas d'equivalent simple et sans cle pour compter les
 reponses a un post precis : ces prospects ne declenchent jamais la
 notification "toujours sans reponse apres 48h", meme s'ils restent effectivement sans
 reponse. Ce n'est pas un bug silencieux : c'est une limite connue, documentee ici plutot
-que de laisser croire a une couverture universelle.
+que de laisser croire a une couverture universelle. Le code de suivi Reddit
+(`jobs/recheck-compteurs.ts`) reste en place et se reactiverait avec la source si un
+accord Reddit arrive un jour, mais degrade proprement en "inconnu" tant qu'elle est
+desactivee.
 
 ## Planification Windows
 
@@ -241,7 +253,7 @@ le meme probleme - elle vaut plus qu'un message prive, pas moins.
 
 ## Cout mensuel
 
-Toutes les sources de collecte (Reddit, Hacker News, Stack Overflow, Bluesky, Mastodon)
+Toutes les sources de collecte actives (Hacker News, Stack Overflow, Bluesky, Mastodon)
 et Telegram sont gratuites - le mot de passe d'application Bluesky aussi. Google Sheets
 est gratuit dans les volumes de cet outil.
 Seul le LLM (OpenRouter) coute reellement : de l'ordre de **3 a 8 EUR par mois** selon le
