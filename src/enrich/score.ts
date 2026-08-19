@@ -2,10 +2,24 @@ import { z } from 'zod'
 import type { RawPost, ScoredPost } from '../types.ts'
 import { appelerLlmJson, DEBUT_CONTENU_TIERS, FIN_CONTENU_TIERS, CONSIGNE_CONTENU_TIERS } from './llm.ts'
 
+/**
+ * Plafond applique par TRONCATURE et non par rejet. Mesure en run reel : le modele
+ * depasse regulierement la limite de quelques caracteres ("Too big: expected string
+ * to have <=200 characters"). Rejeter faisait passer le post pour une panne technique,
+ * donc reessayer 3 fois un echec deterministe (6 appels LLM factures) avant de perdre
+ * definitivement le prospect. La borne existe pour proteger Google Sheets, pas pour
+ * disqualifier un prospect dont le resume est trop bavard.
+ */
+const plafonner = (max: number, minimum = 0) =>
+  z
+    .string()
+    .min(minimum)
+    .transform((s) => (s.length > max ? s.slice(0, max - 1) + '…' : s))
+
 const schema = z.object({
   score: z.number().min(0).max(100),
   langue: z.enum(['fr', 'en', 'es', 'it', 'de']),
-  probleme: z.string().min(1).max(200),
+  probleme: plafonner(200, 1),
 })
 
 const SYSTEME = `Tu qualifies des prospects pour Riveska, un service qui publie les applications

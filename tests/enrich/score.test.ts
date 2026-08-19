@@ -92,3 +92,27 @@ describe('noterPost', () => {
     expect(messageUtilisateur.length).toBeLessThan(2500)
   })
 })
+
+describe('plafond des champs texte', () => {
+  it('tronque un probleme trop long au lieu de rejeter le post', async () => {
+    // Mesure en run reel : le modele depasse regulierement la limite de quelques
+    // caracteres. Rejeter faisait passer un echec DETERMINISTE pour une panne
+    // technique : 3 tentatives, 6 appels LLM factures, puis prospect perdu.
+    const trop = 'a'.repeat(250)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      reponse({ score: 90, langue: 'en', probleme: trop }),
+    ))
+    const r = await noterPost(post, { cle: 'k', modele: 'm' })
+    expect(r).not.toBeNull()
+    expect(r!.probleme.length).toBe(200)
+    expect(r!.probleme.endsWith('\u2026')).toBe(true)
+    expect(r!.score).toBe(90)
+  })
+
+  it('rejette toujours un probleme vide (la troncature n autorise pas le vide)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      reponse({ score: 90, langue: 'en', probleme: '' }),
+    ))
+    expect(await noterPost(post, { cle: 'k', modele: 'm' })).toBeNull()
+  })
+})
