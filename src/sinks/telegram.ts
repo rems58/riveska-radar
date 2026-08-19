@@ -9,9 +9,19 @@ export interface OptionsTelegram {
   chatId: string
 }
 
-/** Message court : le detail complet est dans le Sheet. */
+/**
+ * Message court : le detail complet est dans le Sheet.
+ * ligne === null signifie que l'ecriture dans le Sheet a echoue (pas juste "pas de
+ * numero precis") : il ne faut jamais affirmer un succes qui n'a pas eu lieu, sous
+ * peine d'alerter l'humain sur un prospect qui n'existe nulle part. Avec le pipeline
+ * radar.ts actuel, ce cas ne notifie plus du tout (echec technique => pas d'appel a
+ * notifier), mais cette fonction reste honnete par elle-meme pour tout appelant.
+ */
 export function formaterProspect(p: EnrichedPost, ligne: number | null): string {
-  const ref = ligne ? `\nBrouillon pret -> ligne ${ligne}` : '\nBrouillon pret dans le Sheet'
+  const ref =
+    ligne !== null
+      ? `\nBrouillon pret -> ligne ${ligne}`
+      : "\nEchec d'ecriture dans le Sheet - le prospect sera retente au prochain run"
   return (
     `Nouveau prospect - score ${p.score}\n` +
     `${p.source} - ${p.langue.toUpperCase()}\n` +

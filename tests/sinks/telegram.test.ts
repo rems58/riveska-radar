@@ -26,6 +26,12 @@ describe('formaterProspect', () => {
     const t = formaterProspect(post, null)
     expect(t).toContain('https://reddit.com/1')
   })
+
+  it('n affirme pas que le brouillon est dans le Sheet quand l ecriture a echoue (ligne null)', () => {
+    const t = formaterProspect(post, null)
+    expect(t).not.toContain('Brouillon pret dans le Sheet')
+    expect(t.toLowerCase()).toContain('echec')
+  })
 })
 
 describe('envoyerTelegram', () => {
