@@ -122,6 +122,29 @@ describe('RadarDb', () => {
     })
   })
 
+  describe('enregistrerEchecNotificationRecheck', () => {
+    it('cumule les echecs sans toucher au compteur pipeline (echecs) du meme post', () => {
+      db.marquerVu({ id: 'reddit:a', auteur: 'bob', url: 'u', score: 80 })
+      expect(db.dejaVu('reddit:a')).toBe(true)
+
+      db.enregistrerEchecNotificationRecheck('reddit:a')
+      const deuxieme = db.enregistrerEchecNotificationRecheck('reddit:a')
+
+      expect(deuxieme).toBe(2)
+      // Le post reste "vu" : le compteur de retry recheck est totalement independant
+      // du compteur pipeline lu par dejaVu().
+      expect(db.dejaVu('reddit:a')).toBe(true)
+    })
+
+    it('marquerRecheckFait nettoie le compteur de retry associe', () => {
+      db.marquerVu({ id: 'reddit:a', auteur: 'bob', url: 'u', score: 80, recheckLe: new Date(Date.now() - 1000) })
+      db.enregistrerEchecNotificationRecheck('reddit:a')
+      db.marquerRecheckFait('reddit:a')
+      // Un nouvel appel repart de 1, pas de 2 : la ligne precedente a bien ete purgee.
+      expect(db.enregistrerEchecNotificationRecheck('reddit:a')).toBe(1)
+    })
+  })
+
   describe('sources vides', () => {
     it('compte les incidents par source depuis une date', () => {
       db.enregistrerSourceVide('bluesky')

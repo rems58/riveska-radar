@@ -66,6 +66,16 @@ describe('executerWeekly', () => {
     expect(lireStatuts).toHaveBeenCalledWith(expect.any(Date))
   })
 
+  it('journalise (sans planter) si la notification Telegram du bilan echoue', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const db = ouvrirDb(':memory:')
+    const notifier = vi.fn(async () => false)
+    const r = await executerWeekly({ db, lireStatuts: async () => ['repondu'], notifier })
+    expect(r.detectes).toBe(1)
+    const log = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bilan'))
+    expect(log).toBeDefined()
+  })
+
   it('n affiche pas un pourcentage errone : detectes et repondus viennent toujours de la meme liste de statuts', async () => {
     const db = ouvrirDb(':memory:')
     const notifier = vi.fn(async () => true)

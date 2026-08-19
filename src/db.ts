@@ -48,6 +48,14 @@ export interface RadarDb {
    */
   enregistrerEchec(entree: EntreeEchec): number
   /**
+   * Compteur d'echecs de notification "sans reponse" (jobs/recheck.ts), VOLONTAIREMENT
+   * distinct du compteur d'echecs pipeline (enregistrerEchec/echecs) : ce dernier est
+   * aussi lu par dejaVu() dans le pipeline principal (radar.ts). Le reutiliser ici pour
+   * un id de post deja retenu ferait passer ce post pour "non vu" apres un simple
+   * Telegram rate, et le radar le re-collecterait/re-scorerait/re-ecrirait en double.
+   */
+  enregistrerEchecNotificationRecheck(id: string): number
+  /**
    * Trace qu'une source de collecte a renvoye 0 post alors que d'autres en ont
    * renvoye (voir collectors/index.ts). Permet au bilan hebdomadaire de signaler
    * une source restee muette plusieurs jours de suite, pas seulement le run courant.
@@ -86,6 +94,10 @@ export function ouvrirDb(chemin: string): RadarDb {
       horodatage INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_sources_vides_horodatage ON sources_vides(horodatage);
+    CREATE TABLE IF NOT EXISTS recheck_echecs (
+      id TEXT PRIMARY KEY,
+      echecs INTEGER NOT NULL DEFAULT 0
+    );
   `)
 
   // Migration non destructive : une base ouverte avant l'ajout du compteur d'echecs
@@ -158,6 +170,9 @@ export function ouvrirDb(chemin: string): RadarDb {
 
     marquerRecheckFait(id) {
       db.prepare('UPDATE posts_vus SET recheck_fait = 1 WHERE id = ?').run(id)
+      // Nettoyage : le compteur de retries de notification n'a plus de raison d'etre
+      // une fois le recheck termine (succes ou abandon).
+      db.prepare('DELETE FROM recheck_echecs WHERE id = ?').run(id)
     },
 
     purger(retentionJours) {
@@ -168,6 +183,9 @@ export function ouvrirDb(chemin: string): RadarDb {
       // perte de donnee sensible.
       const limite = Date.now() - retentionJours * 24 * 3600 * 1000
       const r = db.prepare('DELETE FROM posts_vus WHERE vu_le < ?').run(limite)
+      // Balaie les compteurs de retry orphelins (post purge de posts_vus avant que
+      // son recheck n'ait jamais abouti - rarissime, mais evite une fuite lente).
+      db.prepare('DELETE FROM recheck_echecs WHERE id NOT IN (SELECT id FROM posts_vus)').run()
       return r.changes
     },
 
@@ -190,6 +208,15 @@ export function ouvrirDb(chemin: string): RadarDb {
       ).run({ id: e.id, auteur: e.auteur, url: e.url, vuLe: Date.now() })
 
       const r = db.prepare('SELECT echecs FROM posts_vus WHERE id = ?').get(e.id) as { echecs: number }
+      return r.echecs
+    },
+
+    enregistrerEchecNotificationRecheck(id) {
+      db.prepare(
+        `INSERT INTO recheck_echecs (id, echecs) VALUES (?, 1)
+         ON CONFLICT(id) DO UPDATE SET echecs = recheck_echecs.echecs + 1`,
+      ).run(id)
+      const r = db.prepare('SELECT echecs FROM recheck_echecs WHERE id = ?').get(id) as { echecs: number }
       return r.echecs
     },
 

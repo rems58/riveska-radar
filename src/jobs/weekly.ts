@@ -65,6 +65,13 @@ export async function executerWeekly(d: DepsWeekly): Promise<Stats> {
   }
 
   const stats: Stats = { detectes: statuts.length, repondus, ignores, nouveaux }
-  await d.notifier(formaterStats(stats))
+  const notifie = await d.notifier(formaterStats(stats))
+  if (!notifie) {
+    // Pas de mecanisme de retry ici (contrairement a recheck.ts/triggers.ts) : le
+    // bilan est deja calcule, rien a rejouer avant le prochain lundi. Le minimum est
+    // de laisser une trace exploitable - avant ce fix, un Telegram rate ici passait
+    // totalement inapercu, silencieusement, pendant 7 jours.
+    console.warn('[radar] weekly : notification Telegram du bilan hebdomadaire echouee')
+  }
   return stats
 }
