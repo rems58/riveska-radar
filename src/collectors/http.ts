@@ -99,6 +99,22 @@ export function versAuteur(valeur: unknown): string {
 }
 
 /**
+ * Reduit un fragment HTML (statut Mastodon, corps de question StackOverflow) en
+ * texte brut lisible. Volontairement simple (regex, pas de parseur DOM) : suffisant
+ * pour nourrir le prefiltre mots-cles et le LLM, qui n'ont besoin ni de mise en
+ * forme ni de structure. Partagee entre plusieurs collecteurs pour eviter de
+ * dupliquer cette logique (et sa correction) a chaque source qui renvoie du HTML.
+ */
+export function retirerHtml(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/p>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
  * Renvoie la date si elle est valide, sinon null. Empeche une Invalid Date de
  * s'infiltrer silencieusement dans le pipeline (filtre, Sheet).
  */

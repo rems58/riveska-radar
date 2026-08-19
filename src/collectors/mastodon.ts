@@ -1,21 +1,11 @@
 import type { RawPost } from '../types.ts'
-import { recupererJson, versAuteur, dateValideOuNull } from './http.ts'
+import { recupererJson, versAuteur, dateValideOuNull, retirerHtml } from './http.ts'
 
 /** Instances Mastodon publiques surveillees. */
 const INSTANCES = ['mastodon.social', 'fosstodon.org']
 
 /** Hashtags surveilles sur chaque instance. */
 const HASHTAGS = ['appstore', 'iosdev', 'androiddev', 'reactnative']
-
-/** Reduit le HTML des statuts Mastodon en texte brut lisible. */
-function retirerHtml(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, ' ')
-    .replace(/<\/p>/gi, ' ')
-    .replace(/<[^>]+>/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
 
 /**
  * Construit un RawPost a partir d'un statut brut renvoye par une instance Mastodon.

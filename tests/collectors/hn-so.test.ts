@@ -48,11 +48,17 @@ describe('collecterHackerNews', () => {
 })
 
 describe('collecterStackOverflow', () => {
-  it('convertit une reponse StackExchange en RawPost et decode le HTML', async () => {
+  // La fixture ci-dessous reflete la vraie forme de reponse de l'API StackExchange
+  // (verifie par appel reel le 2026-08-19, filter=withbody inclus) : le champ est
+  // `body` (HTML rendu), body_markdown n'existe pas dans la reponse. Une fixture qui
+  // inventait body_markdown faisait passer ce test alors que le collecteur ne
+  // recuperait jamais aucun contenu en production - a ne pas reintroduire.
+  it('convertit une reponse StackExchange en RawPost, decode le HTML du titre et du corps', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
         items: [{
-          question_id: 99, title: 'App rejected &amp; stuck', body_markdown: 'guideline 4.2.6',
+          question_id: 99, title: 'App rejected &amp; stuck',
+          body: '<p>guideline 4.2.6 and more &quot;text&quot;</p>',
           link: 'https://stackoverflow.com/q/99', creation_date: 1_760_000_000,
           owner: { display_name: 'carl' },
         }],
@@ -63,6 +69,21 @@ describe('collecterStackOverflow', () => {
     expect(p.id).toBe('stackoverflow:99')
     expect(p.titre).toBe('App rejected & stuck')
     expect(p.auteur).toBe('carl')
+    expect(p.contenu).toBe('guideline 4.2.6 and more "text"')
+  })
+
+  it('renvoie un contenu vide (pas une exception) si body est absent', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        items: [{
+          question_id: 101, title: 'Sans corps',
+          link: 'https://stackoverflow.com/q/101', creation_date: 1_760_000_000,
+          owner: { display_name: 'carl' },
+        }],
+      }), { status: 200 }),
+    ))
+    const posts = await collecterStackOverflow()
+    expect(posts[0]!.contenu).toBe('')
   })
 
   it('renvoie un tableau vide si l API echoue', async () => {
@@ -82,7 +103,7 @@ describe('collecterStackOverflow', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
         items: [{
-          question_id: 100, title: '&amp;lt;code&amp;gt;', body_markdown: '',
+          question_id: 100, title: '&amp;lt;code&amp;gt;', body: '',
           link: 'https://stackoverflow.com/q/100', creation_date: 1_760_000_000,
           owner: { display_name: 'carl' },
         }],

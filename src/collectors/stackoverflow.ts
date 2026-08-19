@@ -1,5 +1,5 @@
 import type { RawPost } from '../types.ts'
-import { recupererJson, decoderEntitesHtml, versAuteur, dateValideOuNull } from './http.ts'
+import { recupererJson, decoderEntitesHtml, versAuteur, dateValideOuNull, retirerHtml } from './http.ts'
 
 /** Requetes lancees sur l'API StackExchange (site stackoverflow). */
 const REQUETES = [
@@ -34,7 +34,10 @@ function posteDepuisItem(brut: unknown): RawPost | null {
     url: it.link,
     auteur: versAuteur(owner?.display_name),
     titre: decoderEntitesHtml(typeof it.title === 'string' ? it.title : ''),
-    contenu: typeof it.body_markdown === 'string' ? it.body_markdown : '',
+    // L'API StackExchange (meme avec filter=withbody) ne renvoie jamais body_markdown,
+    // seulement `body` en HTML rendu (verifie en appel reel le 2026-08-19) : le corps
+    // etait vide sur 100% des questions, le prefiltre ne voyait que le titre.
+    contenu: decoderEntitesHtml(retirerHtml(typeof it.body === 'string' ? it.body : '')),
     publieLe,
   }
 }
