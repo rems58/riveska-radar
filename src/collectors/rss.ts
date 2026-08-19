@@ -7,13 +7,25 @@ export const FLUX_FORUMS = [
   'https://developer.apple.com/forums/feed/app-store-distribution',
 ]
 
-/** Extrait le contenu d'une balise XML, en gerant les sections CDATA. */
-function extraireBalise(bloc: string, tag: string): string | null {
+/**
+ * Extrait le contenu d'une balise XML, en gerant les sections CDATA.
+ * Exportee pour etre reutilisee par tout consommateur de flux RSS/Atom
+ * (ex: src/jobs/triggers.ts) sans dupliquer ce parsing.
+ */
+export function extraireBalise(bloc: string, tag: string): string | null {
   const re = new RegExp(`<${tag}[^>]*>\\s*(?:<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>|([\\s\\S]*?))\\s*</${tag}>`, 'i')
   const m = re.exec(bloc)
   if (!m) return null
   const valeur = m[1] ?? m[2] ?? ''
   return decoderEntitesHtml(valeur.trim())
+}
+
+/**
+ * Extrait les blocs <item>...</item> d'un flux RSS. Exportee pour la meme raison
+ * qu'extraireBalise : eviter de recopier cette regex ailleurs.
+ */
+export function extraireBlocsItem(xml: string): string[] {
+  return xml.match(/<item[^>]*>[\s\S]*?<\/item>/gi) ?? []
 }
 
 /**
@@ -27,7 +39,7 @@ function extraireBalise(bloc: string, tag: string): string | null {
  */
 function parserRss(xml: string): RawPost[] {
   const posts: RawPost[] = []
-  const items = xml.match(/<item[^>]*>[\s\S]*?<\/item>/gi) ?? []
+  const items = extraireBlocsItem(xml)
 
   for (const bloc of items) {
     const lien = extraireBalise(bloc, 'link')
