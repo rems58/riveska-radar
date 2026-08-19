@@ -62,14 +62,46 @@ export function verrouActif(cheminVerrou: string, dureeMaxMs: number): boolean {
 }
 
 /**
+ * Cree le fichier de verrou en mode exclusif ('wx') : si le fichier existe deja,
+ * l'ecriture echoue avec EEXIST au lieu de l'ecraser. C'est l'OS qui arbitre, donc
+ * un seul process peut gagner meme si plusieurs arrivent au meme instant.
+ */
+function tenterCreation(cheminVerrou: string): boolean {
+  try {
+    writeFileSync(
+      cheminVerrou,
+      JSON.stringify({ pid: process.pid, horodatage: Date.now() } satisfies ContenuVerrou),
+      { flag: 'wx' },
+    )
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'EEXIST') return false
+    throw err
+  }
+}
+
+/**
  * Tente de poser le verrou. Renvoie false (sans rien ecrire) si un run est deja en
  * cours. A appeler juste avant de lancer un job, puis toujours liberer avec
  * libererVerrou en fin d'execution (y compris en cas d'echec - finally cote appelant).
+ *
+ * L'acquisition passe par une creation exclusive et NON par "verrouActif() puis
+ * ecriture" : ce dernier enchainement laisse une fenetre entre le test et l'ecriture
+ * pendant laquelle deux process peuvent tous les deux se croire seuls. Mesure faite
+ * avec deux process lances simultanement : les deux acquerraient le verrou 4 fois
+ * sur 5, ce qui annule completement la protection recherchee.
  */
 export function acquerirVerrou(cheminVerrou: string, dureeMaxMs: number): boolean {
+  if (tenterCreation(cheminVerrou)) return true
+
+  // Le fichier existe : soit un run est vraiment en cours, soit c'est un residu
+  // (crash, machine redemarree, JSON corrompu).
   if (verrouActif(cheminVerrou, dureeMaxMs)) return false
-  writeFileSync(cheminVerrou, JSON.stringify({ pid: process.pid, horodatage: Date.now() } satisfies ContenuVerrou))
-  return true
+
+  // Verrou perime : on le retire et on retente une seule fois. Si un autre process
+  // fait le meme nettoyage au meme moment, la creation exclusive departage.
+  libererVerrou(cheminVerrou)
+  return tenterCreation(cheminVerrou)
 }
 
 /** Ne leve jamais : liberer un verrou deja absent (double appel, nettoyage manuel) est sans consequence. */
