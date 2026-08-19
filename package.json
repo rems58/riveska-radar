@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "radar": "node src/index.ts radar",
+    "reddit": "node src/index.ts reddit",
     "recheck": "node src/index.ts recheck",
     "triggers": "node src/index.ts triggers",
     "weekly": "node src/index.ts weekly",
