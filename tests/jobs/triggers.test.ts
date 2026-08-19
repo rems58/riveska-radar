@@ -51,6 +51,18 @@ describe('executerTriggers', () => {
     expect(notifier).not.toHaveBeenCalled()
   })
 
+  it('journalise et compte un echec de notification', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(xmlAvecItem, { status: 200 })))
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const db = ouvrirDb(':memory:')
+    const notifier = vi.fn(async (_texte: string) => false)
+    const r = await executerTriggers({ db, notifier })
+    expect(r.nouvelles).toBeGreaterThan(0)
+    expect(r.notificationsEchouees).toBe(1)
+    const log = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.toLowerCase().includes('notification'))
+    expect(log).toBeDefined()
+  })
+
   it('ignore un item sans lien exploitable', async () => {
     const xml = `<?xml version="1.0"?><rss><channel><item>
       <title>New requirement for all apps</title>

@@ -143,6 +143,19 @@ describe('executerRadar', () => {
     expect(d.notifier).toHaveBeenCalledTimes(1)
   })
 
+  it('journalise et compte un echec d envoi Telegram sans condamner le post', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const notifier = vi.fn(async () => false)
+    const d = deps({ notifier })
+    const r = await executerRadar(d)
+    // Le prospect est deja ecrit dans le Sheet : un Telegram rate ne doit pas le perdre.
+    expect(r.retenus).toBe(1)
+    expect(r.notificationsEchouees).toBe(1)
+    expect(d.db.dejaVu('reddit:a')).toBe(true)
+    const log = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.toLowerCase().includes('notification'))
+    expect(log).toBeDefined()
+  })
+
   it('se termine proprement si ecrireSheet leve', async () => {
     const ecrireSheet = vi.fn(async () => {
       throw new Error('sheets indisponible')

@@ -22,6 +22,7 @@ export interface ResultatRadar {
   candidats: number
   retenus: number
   purges: number
+  notificationsEchouees: number
 }
 
 /**
@@ -71,6 +72,7 @@ export async function executerRadar(d: DepsRadar): Promise<ResultatRadar> {
   const candidats = prefiltrer(inedits, d.ageMaxJours)
 
   let retenus = 0
+  let notificationsEchouees = 0
 
   for (const c of candidats) {
     try {
@@ -101,7 +103,16 @@ export async function executerRadar(d: DepsRadar): Promise<ResultatRadar> {
         continue
       }
 
-      await d.notifier(enrichi, ligne)
+      const notifie = await d.notifier(enrichi, ligne)
+      if (!notifie) {
+        // Le prospect est deja ecrit dans le Sheet (recuperable) : on ne condamne pas
+        // le post pour autant, mais un Telegram rate = l'humain n'apprend jamais qu'un
+        // prospect chaud est arrive s'il ne surveille pas le Sheet en direct.
+        notificationsEchouees++
+        console.warn(
+          `[radar] pipeline : notification Telegram echouee pour ${c.id} (ligne ${ligne} du Sheet, prospect conserve)`,
+        )
+      }
 
       d.db.marquerVu({
         id: enrichi.id, auteur: enrichi.auteur, url: enrichi.url, score: enrichi.score,
@@ -114,12 +125,19 @@ export async function executerRadar(d: DepsRadar): Promise<ResultatRadar> {
     }
   }
 
-  const resultat: ResultatRadar = { collectes: bruts.length, candidats: candidats.length, retenus, purges }
+  const resultat: ResultatRadar = {
+    collectes: bruts.length,
+    candidats: candidats.length,
+    retenus,
+    purges,
+    notificationsEchouees,
+  }
   // Seule trace visible dans le Planificateur de taches Windows : un run silencieux
   // qui echoue partout resterait indetectable sans ce log.
   console.log(
     `[radar] run termine : ${resultat.collectes} collectes, ${resultat.candidats} candidats, ` +
-      `${resultat.retenus} retenus, ${resultat.purges} purges`,
+      `${resultat.retenus} retenus, ${resultat.purges} purges, ` +
+      `${resultat.notificationsEchouees} notifications echouees`,
   )
   return resultat
 }

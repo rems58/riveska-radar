@@ -28,6 +28,7 @@ export interface DepsTriggers {
 
 export interface ResultatTriggers {
   nouvelles: number
+  notificationsEchouees: number
 }
 
 /**
@@ -40,6 +41,7 @@ export interface ResultatTriggers {
  */
 export async function executerTriggers(d: DepsTriggers): Promise<ResultatTriggers> {
   let nouvelles = 0
+  let notificationsEchouees = 0
 
   for (const flux of FLUX_PLATEFORMES) {
     const xml = await recupererTexte({ source: 'triggers', url: flux })
@@ -58,10 +60,21 @@ export async function executerTriggers(d: DepsTriggers): Promise<ResultatTrigger
       if (!rupture) continue
 
       d.db.marquerVu({ id, auteur: 'plateforme', url: lien, score: 100 })
-      await d.notifier(`Annonce plateforme : ${titre}\n${lien}`)
+      const notifie = await d.notifier(`Annonce plateforme : ${titre}\n${lien}`)
+      if (!notifie) {
+        // Ici, contrairement a radar.ts, il n'y a pas de Sheet en secours : l'annonce
+        // n'est notifiee que par Telegram. On la compte quand meme comme "vue" (pas de
+        // nouvelle tentative), le RSS ne la renverra plus - seul le log garde la trace.
+        notificationsEchouees++
+        console.warn(`[radar] triggers : notification Telegram echouee pour l'annonce ${lien}`)
+      }
       nouvelles++
     }
   }
 
-  return { nouvelles }
+  console.log(
+    `[radar] triggers : run termine, ${nouvelles} nouvelles annonces, ` +
+      `${notificationsEchouees} notifications echouees`,
+  )
+  return { nouvelles, notificationsEchouees }
 }
