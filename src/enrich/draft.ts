@@ -3,8 +3,13 @@ import type { ScoredPost, EnrichedPost } from '../types.ts'
 import { appelerLlmJson } from './llm.ts'
 
 const schema = z.object({
-  traductionFr: z.string(),
-  brouillon: z.string().min(1),
+  // Le post est tronque a 2000 caracteres avant envoi ; une traduction fidele
+  // ne devrait jamais depasser tres largement cette taille.
+  traductionFr: z.string().max(3000),
+  // Le prompt vise 120 mots (~1200 caracteres avec marge). Une reponse plus
+  // longue est rejetee : mieux vaut un prospect ignore qu'une cellule Sheet
+  // qui fait echouer l'ecriture de toute la ligne (limite Sheets = 50000).
+  brouillon: z.string().min(1).max(1200),
 })
 
 const SYSTEME = `Tu prepares un brouillon de reponse publique pour Remy, qui edite Riveska
@@ -26,6 +31,8 @@ Reponds UNIQUEMENT par un objet JSON :
 {"traductionFr": "<traduction ou chaine vide>", "brouillon": "<reponse>"}`
 
 const CONTENU_MAX = 2000
+// Chaque caractere envoye au LLM est facture ; le titre n'apporte rien au-dela.
+const TITRE_MAX = 300
 
 export interface OptionsDraft {
   cle: string
@@ -40,7 +47,7 @@ export interface OptionsDraft {
 export async function enrichirPost(post: ScoredPost, o: OptionsDraft): Promise<EnrichedPost | null> {
   const utilisateur = `Langue detectee: ${post.langue}
 Probleme: ${post.probleme}
-Titre: ${post.titre}
+Titre: ${post.titre.slice(0, TITRE_MAX)}
 Contenu: ${post.contenu.slice(0, CONTENU_MAX)}`
 
   const resultat = await appelerLlmJson({

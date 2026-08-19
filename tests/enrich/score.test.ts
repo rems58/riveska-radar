@@ -51,4 +51,19 @@ describe('noterPost', () => {
     const r = await noterPost(post, { cle: 'k', modele: 'm', apparitionsPrecedentes: 0 })
     expect(r!.score).toBe(40)
   })
+
+  it('tronque le titre avant de l envoyer au LLM (cout)', async () => {
+    const titreLong = 'x'.repeat(5000)
+    const postTitreLong: RawPost = { ...post, titre: titreLong }
+    const fetchMock = vi.fn().mockResolvedValue(reponse({ score: 50, langue: 'en', probleme: 'x' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await noterPost(postTitreLong, { cle: 'k', modele: 'm' })
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const corps = JSON.parse(init.body as string) as { messages: Array<{ content: string }> }
+    const messageUtilisateur = corps.messages[1]!.content
+    expect(messageUtilisateur).not.toContain(titreLong)
+    expect(messageUtilisateur.length).toBeLessThan(2500)
+  })
 })

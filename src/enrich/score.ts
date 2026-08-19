@@ -26,6 +26,8 @@ Reponds UNIQUEMENT par un objet JSON :
 {"score": <0-100>, "langue": "<fr|en|es|it|de>", "probleme": "<resume en une phrase, en francais>"}`
 
 const CONTENU_MAX = 2000
+// Chaque caractere envoye au LLM est facture ; le titre n'apporte rien au-dela.
+const TITRE_MAX = 300
 
 export interface OptionsScore {
   cle: string
@@ -41,7 +43,7 @@ export interface OptionsScore {
  */
 export async function noterPost(post: RawPost, o: OptionsScore): Promise<ScoredPost | null> {
   const utilisateur = `Source: ${post.source}
-Titre: ${post.titre}
+Titre: ${post.titre.slice(0, TITRE_MAX)}
 Contenu: ${post.contenu.slice(0, CONTENU_MAX)}`
 
   const resultat = await appelerLlmJson({

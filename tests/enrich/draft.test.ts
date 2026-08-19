@@ -49,4 +49,48 @@ describe('enrichirPost', () => {
     expect(r!.score).toBe(91)
     expect(r!.url).toBe('https://reddit.com/1')
   })
+
+  it('rejette un brouillon demesurement long plutot que de polluer le Sheet', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      reponse({ traductionFr: '', brouillon: 'x'.repeat(5000) }),
+    ))
+    const r = await enrichirPost(scored(), { cle: 'k', modele: 'm' })
+    expect(r).toBeNull()
+    expect(warnSpy).toHaveBeenCalled()
+  })
+
+  it('rejette une traduction demesurement longue', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      reponse({ traductionFr: 'x'.repeat(10_000), brouillon: 'brouillon de longueur normale' }),
+    ))
+    const r = await enrichirPost(scored(), { cle: 'k', modele: 'm' })
+    expect(r).toBeNull()
+  })
+
+  it('accepte un brouillon de longueur normale (non-regression)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      reponse({
+        traductionFr: 'traduction normale',
+        brouillon: 'Un brouillon de longueur tout a fait raisonnable, bien en dessous de la limite.',
+      }),
+    ))
+    const r = await enrichirPost(scored(), { cle: 'k', modele: 'm' })
+    expect(r).not.toBeNull()
+    expect(r!.brouillon).toContain('raisonnable')
+  })
+
+  it('tronque le titre avant de l envoyer au LLM (cout)', async () => {
+    const titreLong = 'x'.repeat(5000)
+    const fetchMock = vi.fn().mockResolvedValue(reponse({ traductionFr: '', brouillon: 'ok' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await enrichirPost(scored({ titre: titreLong }), { cle: 'k', modele: 'm' })
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const corps = JSON.parse(init.body as string) as { messages: Array<{ content: string }> }
+    const messageUtilisateur = corps.messages[1]!.content
+    expect(messageUtilisateur).not.toContain(titreLong)
+    expect(messageUtilisateur.length).toBeLessThan(2500)
+  })
 })
