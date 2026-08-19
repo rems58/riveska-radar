@@ -18,11 +18,75 @@ interface ReponseOpenRouter {
   choices?: Array<{ message?: { content?: string } }>
 }
 
-/** Les modeles encadrent souvent leur JSON de balises markdown : on les retire. */
-function extraireJson(brut: string): string {
-  const fence = brut.match(/```(?:json)?\s*([\s\S]*?)```/)
-  if (fence?.[1]) return fence[1].trim()
-  return brut.trim()
+/**
+ * Cherche le premier objet JSON syntaxiquement equilibre dans un texte libre
+ * (ex: le modele repond "Voici le JSON : {...}" sans balises), en comptant les
+ * accolades tout en ignorant celles situees a l'interieur de chaines (avec
+ * gestion de l'echappement, pour ne pas se faire piquer par un `\"` ou un `}`
+ * litteral dans une valeur).
+ */
+function extraireObjetJsonEquilibre(texte: string): string | null {
+  const debut = texte.indexOf('{')
+  if (debut === -1) return null
+
+  let profondeur = 0
+  let dansChaine = false
+  let echappement = false
+
+  for (let i = debut; i < texte.length; i++) {
+    const c = texte[i]!
+
+    if (dansChaine) {
+      if (echappement) echappement = false
+      else if (c === '\\') echappement = true
+      else if (c === '"') dansChaine = false
+      continue
+    }
+
+    if (c === '"') dansChaine = true
+    else if (c === '{') profondeur++
+    else if (c === '}') {
+      profondeur--
+      if (profondeur === 0) return texte.slice(debut, i + 1)
+    }
+  }
+
+  return null
+}
+
+/**
+ * Extrait puis parse le JSON produit par le modele, qui peut arriver brut,
+ * encadre de balises markdown (parfois plusieurs blocs si le modele illustre
+ * le format avant de repondre), ou noye dans du texte explicatif.
+ * Essaie plusieurs candidats par ordre de confiance decroissant et renvoie le
+ * premier qui parse ; l'appel ayant deja ete facture, on evite de jeter un
+ * prospect pour une simple habitude de mise en forme du modele.
+ */
+function parserJsonDuModele(brut: string): { valeur: unknown } | null {
+  const candidats: string[] = []
+
+  // 1. Blocs fences ```...``` ou ```json...``` : peut y en avoir plusieurs,
+  // on retient celui qui parse effectivement, pas systematiquement le premier.
+  for (const m of brut.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)) {
+    if (m[1]) candidats.push(m[1].trim())
+  }
+
+  // 2. Le texte entier, tel quel.
+  candidats.push(brut.trim())
+
+  // 3. Repli : premier objet JSON equilibre trouve dans le texte libre.
+  const objetEquilibre = extraireObjetJsonEquilibre(brut)
+  if (objetEquilibre) candidats.push(objetEquilibre)
+
+  for (const candidat of candidats) {
+    try {
+      return { valeur: JSON.parse(candidat) }
+    } catch {
+      // candidat suivant
+    }
+  }
+
+  return null
 }
 
 /**
@@ -64,16 +128,13 @@ export async function appelerLlmJson<T>(o: OptionsLlm<T>): Promise<T | null> {
     return null
   }
 
-  let parse: unknown
-  try {
-    parse = JSON.parse(extraireJson(contenu))
-  } catch (err) {
-    const raison = err instanceof Error ? err.message : String(err)
-    console.warn(`[radar] llm : contenu du modele non-JSON (${raison})`)
+  const parse = parserJsonDuModele(contenu)
+  if (parse === null) {
+    console.warn('[radar] llm : aucun JSON exploitable dans la reponse du modele')
     return null
   }
 
-  const resultat = o.schema.safeParse(parse)
+  const resultat = o.schema.safeParse(parse.valeur)
   if (!resultat.success) {
     const raison = resultat.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')
     console.warn(`[radar] llm : reponse hors schema attendu (${raison})`)

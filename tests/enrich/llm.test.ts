@@ -74,4 +74,27 @@ describe('appelerLlmJson', () => {
       expect(String(call[0])).not.toContain('secret-tres-prive')
     }
   })
+
+  it('parse un JSON precede de texte explicatif, sans balises markdown', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      reponseOpenRouter('Voici le JSON : {"score": 70, "langue": "en", "probleme": "x"}'),
+    ))
+    const r = await appelerLlmJson({ cle: 'k', modele: 'm', systeme: 's', utilisateur: 'u', schema })
+    expect(r).toEqual({ score: 70 })
+  })
+
+  it('retient le bloc fence qui parse effectivement quand plusieurs sont presents', async () => {
+    const contenu = '```json\n{ceci n est pas du json}\n```\ntexte intercalaire\n```json\n{"score": 65}\n```'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reponseOpenRouter(contenu)))
+    const r = await appelerLlmJson({ cle: 'k', modele: 'm', systeme: 's', utilisateur: 'u', schema })
+    expect(r).toEqual({ score: 65 })
+  })
+
+  it('renvoie null et journalise si aucun JSON exploitable n est trouve', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reponseOpenRouter('Je ne sais pas du tout quoi repondre ici.')))
+    const r = await appelerLlmJson({ cle: 'k', modele: 'm', systeme: 's', utilisateur: 'u', schema })
+    expect(r).toBeNull()
+    expect(warnSpy).toHaveBeenCalled()
+  })
 })
