@@ -15,6 +15,29 @@ function nombreOptionnel(valeurDefaut: number) {
   }, z.coerce.number().default(valeurDefaut))
 }
 
+/**
+ * Restaure les \n echappes (stockage .env sur une ligne) en vrais sauts de ligne,
+ * puis verifie que le resultat ressemble a une cle PEM complete. Mesure reelle :
+ * une cle collee SANS guillemets doubles dans le .env est coupee au premier retour
+ * a la ligne par process.loadEnvFile (27 caracteres obtenus au lieu de ~1700, BEGIN
+ * present mais END absent) - z.string().min(1) laissait passer ce fragment sans rien
+ * signaler, et chaque appel Google Sheets echouait ensuite en silence (echec
+ * technique -> le prospect disparait au bout de MAX_ECHECS_TECHNIQUES runs).
+ * Bloquer ici, bruyamment, au demarrage, coute infiniment moins cher.
+ */
+const cleGooglePrivee = z
+  .string()
+  .min(1)
+  .transform((v) => v.replace(/\\n/g, '\n'))
+  .refine((v) => v.includes('-----BEGIN PRIVATE KEY-----') && v.includes('-----END PRIVATE KEY-----'), {
+    message:
+      'GOOGLE_SA_PRIVATE_KEY ne ressemble pas a une cle privee PEM complete ' +
+      '(BEGIN/END manquant apres restauration des \\n). Cause la plus frequente : ' +
+      'la valeur n\'est pas entre guillemets doubles dans le .env et a ete coupee au ' +
+      'premier retour a la ligne. Entoure toute la valeur de guillemets doubles, ' +
+      'voir README > "Ou obtenir chaque identifiant".',
+  })
+
 const schema = z.object({
   REDDIT_CLIENT_ID: z.string().min(1),
   REDDIT_CLIENT_SECRET: z.string().min(1),
@@ -22,7 +45,7 @@ const schema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1),
   TELEGRAM_CHAT_ID: z.string().min(1),
   GOOGLE_SA_EMAIL: z.string().min(1),
-  GOOGLE_SA_PRIVATE_KEY: z.string().min(1),
+  GOOGLE_SA_PRIVATE_KEY: cleGooglePrivee,
   SHEET_ID: z.string().min(1),
   SHEET_TAB: z.string().default('Prospects'),
   OPENROUTER_API_KEY: z.string().min(1),
@@ -58,8 +81,9 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
     telegramBotToken: v.TELEGRAM_BOT_TOKEN,
     telegramChatId: v.TELEGRAM_CHAT_ID,
     googleSaEmail: v.GOOGLE_SA_EMAIL,
-    // Les cles privees stockees en .env portent des \n echappes : il faut les restaurer.
-    googleSaPrivateKey: v.GOOGLE_SA_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    // La restauration des \n echappes et la validation BEGIN/END sont faites par le
+    // schema (cleGooglePrivee) : v.GOOGLE_SA_PRIVATE_KEY est deja la cle finale ici.
+    googleSaPrivateKey: v.GOOGLE_SA_PRIVATE_KEY,
     sheetId: v.SHEET_ID,
     sheetTab: v.SHEET_TAB,
     openrouterApiKey: v.OPENROUTER_API_KEY,

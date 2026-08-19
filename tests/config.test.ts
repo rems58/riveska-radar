@@ -56,6 +56,34 @@ describe('parseConfig', () => {
     const cfg = parseConfig({ ...valide, SCORE_THRESHOLD: '80' })
     expect(cfg.scoreThreshold).toBe(80)
   })
+
+  it('rejette une cle privee tronquee au premier retour a la ligne (sans guillemets)', () => {
+    // Reproduit exactement ce que process.loadEnvFile produit pour une valeur non
+    // guillemetee contenant de vrais retours a la ligne : coupee des le premier,
+    // BEGIN present mais END absent.
+    expect(() => parseConfig({ ...valide, GOOGLE_SA_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----' })).toThrow(
+      /GOOGLE_SA_PRIVATE_KEY/,
+    )
+  })
+
+  it('le message d erreur de la cle privee tronquee oriente vers les guillemets doubles', () => {
+    try {
+      parseConfig({ ...valide, GOOGLE_SA_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----' })
+      expect.unreachable('parseConfig aurait du lever')
+    } catch (err) {
+      expect(String(err)).toContain('guillemets')
+    }
+  })
+
+  it('accepte une cle privee complete (BEGIN et END presents apres restauration des \\n)', () => {
+    const cfg = parseConfig({
+      ...valide,
+      GOOGLE_SA_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\\nMIIabc123\\n-----END PRIVATE KEY-----\\n',
+    })
+    expect(cfg.googleSaPrivateKey).toContain('-----BEGIN PRIVATE KEY-----')
+    expect(cfg.googleSaPrivateKey).toContain('-----END PRIVATE KEY-----')
+    expect(cfg.googleSaPrivateKey).not.toContain('\\n')
+  })
 })
 
 describe('getConfig', () => {
