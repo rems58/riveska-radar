@@ -124,10 +124,22 @@ Cela enregistre quatre taches :
 | `RiveskaRadar-Weekly` | le lundi a 9h |
 
 Chaque tache demarre meme sur batterie et se relance jusqu'a 3 fois en cas d'echec.
-Le Planificateur de taches ne conserve pas la sortie console d'un process lance
-directement : le script redirige donc chaque job vers son propre fichier dans
-`riveska-radar/logs/` (`radar.log`, `recheck.log`, etc.), en mode ajout - c'est la
-seule facon de diagnostiquer un run rate sans surveillance humaine en direct.
+`installer-taches.ps1` enregistre chaque tache pour qu'elle lance `scripts/lancer-job.ps1`
+(pas `node` directement) : ce petit script redirige la sortie de la commande vers son
+propre fichier dans `riveska-radar/logs/` (`radar.log`, `recheck.log`, etc., en mode
+ajout - le Planificateur de taches ne conserve la sortie d'aucun process qu'il lance
+directement, c'est la seule facon de diagnostiquer un run rate sans surveillance humaine
+en direct) et applique une rotation simple : au-dela de 5 Mo, l'ancien contenu est archive
+en `<commande>.log.1` (une seule generation, ecrasee a chaque rotation) et le job repart
+d'un fichier vide - le disque d'un mini PC ne sature jamais sur un job relance toutes les
+15 minutes sans surveillance. Ces fichiers sont ouvrables avec Notepad ou VS Code
+(encodage UTF-16, normal pour une redirection PowerShell).
+
+`lancer-job.ps1` resout le chemin de `node` a **chaque execution**, pas seulement a
+l'installation : une mise a jour de Node qui change son emplacement ne casse donc pas les
+taches deja enregistrees. Si Node devient introuvable (jamais installe, ou absent du PATH
+systeme utilise par le Planificateur - qui peut differer du PATH d'une session interactive),
+le job echoue proprement et l'ecrit dans son fichier de log plutot que d'echouer en silence.
 
 **Verifier l'installation :**
 
@@ -212,6 +224,14 @@ Verifier dans cet ordre :
 3. `SHEET_ID` correspond bien a l'identifiant dans l'URL du Sheet, pas a son nom.
 4. Les logs (`logs/radar.log` en planifie, ou la sortie console en lancement manuel)
    contiennent un avertissement `[radar] sheets : ...` qui precise la cause exacte.
+
+**`installer-taches.ps1` s'arrete avec "Node introuvable dans le PATH"**
+Node n'est pas installe, ou n'est pas dans le PATH utilise par ce PowerShell. Installer
+Node depuis [nodejs.org](https://nodejs.org), verifier `node --version` dans un **nouveau**
+terminal (le PATH ne se met a jour que dans les nouvelles sessions), puis relancer le
+script. Un job planifie deja enregistre qui perd Node en cours de route (desinstallation,
+deplacement) l'ecrit dans son propre log au lieu d'echouer en silence - inutile de
+relancer `installer-taches.ps1` pour une simple mise a jour de Node au meme emplacement.
 
 **Telegram ne notifie jamais**
 1. Verifier que `TELEGRAM_CHAT_ID` est correct : relancer `getUpdates` (voir tableau
