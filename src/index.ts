@@ -17,9 +17,37 @@ import { executerRecheck } from './jobs/recheck.ts'
 import { executerTriggers } from './jobs/triggers.ts'
 import { executerWeekly } from './jobs/weekly.ts'
 
-// La base vit a cote du projet (src/.. = racine de riveska-radar/), pas dans un
-// dossier temporaire : elle doit survivre entre deux executions planifiees.
-const CHEMIN_DB = path.join(import.meta.dirname, '..', 'radar.db')
+// La base et le .env vivent a cote du projet (src/.. = racine de riveska-radar/), pas
+// dans un dossier temporaire ni relativement au repertoire courant : le Planificateur
+// de taches peut lancer node depuis n'importe ou.
+const RACINE = path.join(import.meta.dirname, '..')
+const CHEMIN_DB = path.join(RACINE, 'radar.db')
+const CHEMIN_ENV = path.join(RACINE, '.env')
+
+/**
+ * Charge le fichier .env a la racine du projet dans process.env. Node ne le fait
+ * jamais de lui-meme (contrairement a la croyance repandue) : sans cet appel,
+ * getConfig() ne voit jamais les variables du .env et zod echoue avec un message
+ * qui ressemble a une mauvaise configuration alors que le fichier est correct.
+ *
+ * - Un .env absent (chemin par defaut) n'est PAS une erreur : on poursuit et laisse
+ *   la validation zod de getConfig() expliquer precisement ce qui manque.
+ * - Une variable deja presente dans process.env (lancement manuel, CI, tache
+ *   planifiee avec des variables d'environnement systeme) n'est jamais ecrasee :
+ *   c'est le comportement natif de process.loadEnvFile, documente ici pour que ce
+ *   ne soit pas une surprise silencieuse.
+ */
+export function chargerEnv(chemin: string = CHEMIN_ENV): void {
+  try {
+    process.loadEnvFile(chemin)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code
+    if (code === 'ENOENT') return
+    console.warn(
+      `[radar] .env : echec de lecture de ${chemin} - ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+}
 
 let dbPartagee: RadarDb | null = null
 
@@ -148,6 +176,8 @@ async function main(): Promise<void> {
     process.exitCode = 1
     return
   }
+
+  chargerEnv()
 
   try {
     await executer()
