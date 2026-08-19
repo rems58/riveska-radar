@@ -55,11 +55,57 @@ describe('executerRadar', () => {
     expect(noter).not.toHaveBeenCalled()
   })
 
-  it('jette un post sous le seuil de score', async () => {
+  it('jette un post sous le seuil de score et le marque vu (rejet legitime, non-regression)', async () => {
     const d = deps({ noter: async (p) => ({ ...p, score: 20, langue: 'en' as const, probleme: 'x' }) })
     const r = await executerRadar(d)
     expect(r.retenus).toBe(0)
     expect(d.ecrireSheet).not.toHaveBeenCalled()
+    expect(d.db.dejaVu('reddit:a')).toBe(true)
+  })
+
+  it('un echec technique du scoring (noter renvoie null) ne condamne pas le post', async () => {
+    const d = deps({ noter: async () => null })
+    const r = await executerRadar(d)
+    expect(r.retenus).toBe(0)
+    expect(d.db.dejaVu('reddit:a')).toBe(false)
+  })
+
+  it('un echec technique de l enrichissement (enrichir renvoie null) ne condamne pas le post', async () => {
+    const d = deps({ enrichir: async () => null })
+    const r = await executerRadar(d)
+    expect(r.retenus).toBe(0)
+    expect(d.db.dejaVu('reddit:a')).toBe(false)
+  })
+
+  it('un echec technique d ecriture Sheet (ecrireSheet renvoie null) ne condamne pas le post et ne notifie pas', async () => {
+    const ecrireSheet = vi.fn(async () => null)
+    const d = deps({ ecrireSheet })
+    const r = await executerRadar(d)
+    expect(r.retenus).toBe(0)
+    expect(d.db.dejaVu('reddit:a')).toBe(false)
+    expect(d.notifier).not.toHaveBeenCalled()
+  })
+
+  it('abandonne definitivement un post apres 3 echecs techniques consecutifs', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const db = ouvrirDb(':memory:')
+    const noter = vi.fn(async () => null)
+    const base = deps({ db, collecter: async () => [raw('reddit:a')], noter })
+
+    await executerRadar(base)
+    await executerRadar(base)
+    const r3 = await executerRadar(base)
+    expect(r3.retenus).toBe(0)
+    expect(db.dejaVu('reddit:a')).toBe(true)
+    expect(noter).toHaveBeenCalledTimes(3)
+
+    // 4e run : le post est deja "vu" (abandonne), donc filtre avant meme d'atteindre noter.
+    const r4 = await executerRadar(base)
+    expect(r4.candidats).toBe(0)
+    expect(noter).toHaveBeenCalledTimes(3)
+
+    const logAbandon = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('abandonne'))
+    expect(logAbandon).toBeDefined()
   })
 
   it('memorise le post retenu pour ne pas le retraiter', async () => {
