@@ -29,6 +29,14 @@ describe('compterReponses - Reddit', () => {
     expect(r).toBe(-1)
   })
 
+  it('renvoie -1 sans appel reseau si redditUserAgent est absent (Reddit desactive)', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const r = await compterReponses('https://reddit.com/r/x/comments/abc/titre/', {})
+    expect(r).toBe(-1)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('renvoie -1 si la requete echoue', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('reseau HS')))

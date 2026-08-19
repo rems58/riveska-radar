@@ -84,6 +84,19 @@ describe('parseConfig', () => {
     expect(cfg.googleSaPrivateKey).toContain('-----END PRIVATE KEY-----')
     expect(cfg.googleSaPrivateKey).not.toContain('\\n')
   })
+
+  it('n exige plus les identifiants Reddit (source facultative, API fermee)', () => {
+    const { REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USER_AGENT, ...sansReddit } = valide
+    const cfg = parseConfig(sansReddit)
+    expect(cfg.redditClientId).toBeUndefined()
+    expect(cfg.redditClientSecret).toBeUndefined()
+    expect(cfg.redditUserAgent).toBeUndefined()
+  })
+
+  it('une variable Reddit vide se comporte comme absente (pas une chaine vide truthy)', () => {
+    const cfg = parseConfig({ ...valide, REDDIT_CLIENT_ID: '', REDDIT_CLIENT_SECRET: '', REDDIT_USER_AGENT: '' })
+    expect(cfg.redditClientId).toBeUndefined()
+  })
 })
 
 describe('getConfig', () => {

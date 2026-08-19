@@ -84,24 +84,48 @@ export async function collecterTout(
  * entierement vers Discord depuis - aucune API RSS n'existe la-bas ; Apple bloque les
  * requetes automatisees derriere une verification anti-bot). Aucun flux de
  * remplacement fonctionnel n'a ete trouve pour ce role - voir README.
+ *
+ * Reddit et Bluesky sont FACULTATIFS (identifiants absents -> API fermee/non
+ * authentifiee, voir README). Ils ne sont ajoutes a la liste que si leurs
+ * identifiants sont presents : une source absente de la liste n'est jamais vue par
+ * collecterTout, donc jamais confondue par le garde-fou "source vide" avec un flux
+ * casse - le collecteur lui-meme sait aussi se desactiver proprement (teste
+ * isolement), mais le filtrage ici evite en plus tout faux-positif du garde-fou.
  */
 export function collecteursParDefaut(): SourceCollecte[] {
   const cfg = getConfig()
-  return [
-    {
-      nom: 'reddit',
-      collecter: () => collecterReddit({
-        clientId: cfg.redditClientId,
-        clientSecret: cfg.redditClientSecret,
-        userAgent: cfg.redditUserAgent,
-      }),
-    },
+  const sources: SourceCollecte[] = [
     { nom: 'hackernews', collecter: collecterHackerNews },
     { nom: 'stackoverflow', collecter: collecterStackOverflow },
-    {
-      nom: 'bluesky',
-      collecter: () => collecterBluesky({ id: cfg.blueskyId, appPassword: cfg.blueskyAppPassword }),
-    },
     { nom: 'mastodon', collecter: collecterMastodon },
   ]
+
+  if (cfg.redditClientId && cfg.redditClientSecret && cfg.redditUserAgent) {
+    const { redditClientId, redditClientSecret, redditUserAgent } = cfg
+    sources.push({
+      nom: 'reddit',
+      collecter: () => collecterReddit({
+        clientId: redditClientId,
+        clientSecret: redditClientSecret,
+        userAgent: redditUserAgent,
+      }),
+    })
+  } else {
+    console.warn(
+      '[radar] reddit : source desactivee pour ce run (identifiants absents - API fermee en ' +
+        'libre-service depuis la Responsible Builder Policy de Reddit, voir README).',
+    )
+  }
+
+  if (cfg.blueskyId && cfg.blueskyAppPassword) {
+    const { blueskyId, blueskyAppPassword } = cfg
+    sources.push({
+      nom: 'bluesky',
+      collecter: () => collecterBluesky({ id: blueskyId, appPassword: blueskyAppPassword }),
+    })
+  } else {
+    console.warn('[radar] bluesky : source desactivee pour ce run (BLUESKY_ID/BLUESKY_APP_PASSWORD absents).')
+  }
+
+  return sources
 }

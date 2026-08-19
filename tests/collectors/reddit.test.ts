@@ -137,6 +137,30 @@ describe('collecterReddit', () => {
     expect(posts.some((p) => Number.isNaN(p.publieLe.getTime()))).toBe(false)
   })
 
+  it('se desactive proprement (log explicite, tableau vide) sans identifiants', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const posts = await collecterReddit()
+
+    expect(posts).toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(String(warnSpy.mock.calls[0]![0])).toContain('REDDIT_CLIENT_ID')
+  })
+
+  it('se desactive aussi si un seul des trois identifiants manque', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const posts = await collecterReddit({ clientId: 'id', clientSecret: 'secret' })
+
+    expect(posts).toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('renvoie un tableau vide sans lever si children n est pas un tableau', async () => {
     const reponse = { data: { children: { pas: 'un tableau' } } }
     const fetchMock = vi.fn()

@@ -51,9 +51,15 @@ const cleGooglePrivee = z
   })
 
 const schema = z.object({
-  REDDIT_CLIENT_ID: z.string().min(1),
-  REDDIT_CLIENT_SECRET: z.string().min(1),
-  REDDIT_USER_AGENT: z.string().min(1),
+  // Facultatifs : Reddit a ferme la creation d'applications en libre-service
+  // (Responsible Builder Policy, verifie le 2026-08-19 - creation refusee, /new.json
+  // et /search.json renvoient 403 meme avec un user-agent de navigateur, seul
+  // access_token repond encore mais exige des cles desormais inobtenables sans
+  // approbation ecrite explicite pour un usage commercial). Sans ces identifiants,
+  // le collecteur se desactive proprement plutot que d'echouer a chaque run.
+  REDDIT_CLIENT_ID: chaineOptionnelle(),
+  REDDIT_CLIENT_SECRET: chaineOptionnelle(),
+  REDDIT_USER_AGENT: chaineOptionnelle(),
   TELEGRAM_BOT_TOKEN: z.string().min(1),
   TELEGRAM_CHAT_ID: z.string().min(1),
   GOOGLE_SA_EMAIL: z.string().min(1),
@@ -73,9 +79,10 @@ const schema = z.object({
 })
 
 export interface Config {
-  redditClientId: string
-  redditClientSecret: string
-  redditUserAgent: string
+  /** Facultatif : absent -> le collecteur Reddit se desactive proprement (voir README). */
+  redditClientId?: string
+  redditClientSecret?: string
+  redditUserAgent?: string
   telegramBotToken: string
   telegramChatId: string
   googleSaEmail: string

@@ -15,14 +15,24 @@ const REQUETES = [
   '"app store" help',
 ]
 
+/** Facultatifs (voir README > "Ou obtenir chaque identifiant") : Reddit a ferme la creation
+ *  d'applications en libre-service (Responsible Builder Policy), la source se desactive
+ *  proprement sans ces trois valeurs plutot que d'echouer a chaque run. */
 export interface OptionsReddit {
-  clientId: string
-  clientSecret: string
-  userAgent: string
+  clientId?: string
+  clientSecret?: string
+  userAgent?: string
 }
 
 interface ReponseChildren {
   data?: { children?: unknown }
+}
+
+/** Identifiants confirmes presents (post-garde dans collecterReddit). */
+interface IdentifiantsReddit {
+  clientId: string
+  clientSecret: string
+  userAgent: string
 }
 
 /**
@@ -30,7 +40,7 @@ interface ReponseChildren {
  * S'appuie sur recupererJson : une panne (reseau, timeout, statut) renvoie null
  * et est deja journalisee, jamais levee.
  */
-async function obtenirToken(o: OptionsReddit): Promise<string | null> {
+async function obtenirToken(o: IdentifiantsReddit): Promise<string | null> {
   const creds = Buffer.from(`${o.clientId}:${o.clientSecret}`).toString('base64')
   const j = await recupererJson<{ access_token?: unknown }>({
     source: 'reddit-token',
@@ -80,10 +90,26 @@ function posteDepuisChild(brut: unknown): RawPost | null {
 
 /**
  * Interroge l'API officielle Reddit (OAuth client_credentials).
+ * Sans les trois identifiants, la source se desactive proprement (log explicite,
+ * tableau vide) : Reddit a ferme la creation d'applications en libre-service
+ * (Responsible Builder Policy, verifie le 2026-08-19 - /prefs/apps refuse la
+ * creation, /new.json et /search.json renvoient 403 meme avec un user-agent de
+ * navigateur ; seul access_token repond encore mais exige des cles desormais
+ * inobtenables sans approbation ecrite explicite pour un usage commercial).
  * Toute panne unitaire est avalee : un subreddit indisponible ne doit pas casser la collecte.
  */
-export async function collecterReddit(o: OptionsReddit): Promise<RawPost[]> {
-  const token = await obtenirToken(o)
+export async function collecterReddit(o: OptionsReddit = {}): Promise<RawPost[]> {
+  if (!o.clientId || !o.clientSecret || !o.userAgent) {
+    console.warn(
+      '[radar] reddit : REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET/REDDIT_USER_AGENT absents - source ' +
+        'desactivee (API fermee en libre-service depuis la Responsible Builder Policy de Reddit, ' +
+        'approbation ecrite necessaire pour un usage commercial - voir README).',
+    )
+    return []
+  }
+  const identifiants: IdentifiantsReddit = { clientId: o.clientId, clientSecret: o.clientSecret, userAgent: o.userAgent }
+
+  const token = await obtenirToken(identifiants)
   if (!token) return []
 
   const vus = new Set<string>()
@@ -98,7 +124,7 @@ export async function collecterReddit(o: OptionsReddit): Promise<RawPost[]> {
       const j = await recupererJson<ReponseChildren>({
         source: `reddit:${sub}`,
         url,
-        init: { headers: { Authorization: `Bearer ${token}`, 'User-Agent': o.userAgent } },
+        init: { headers: { Authorization: `Bearer ${token}`, 'User-Agent': identifiants.userAgent } },
       })
       const children = j?.data?.children
       if (!Array.isArray(children)) continue

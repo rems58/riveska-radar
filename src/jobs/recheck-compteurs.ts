@@ -12,8 +12,12 @@ import { recupererJson } from '../collectors/http.ts'
  */
 
 export interface OptionsCompterReponses {
-  /** Necessaire pour l'API Reddit, qui rejette les requetes sans User-Agent identifiant. */
-  redditUserAgent: string
+  /**
+   * Facultatif : REDDIT_USER_AGENT n'est plus configure une fois Reddit desactive
+   * (API fermee, voir README). Sans lui, le suivi 48h Reddit degrade proprement en
+   * -1 (inconnu), meme traitement que les sources deja non couvertes.
+   */
+  redditUserAgent?: string
 }
 
 interface ListingReddit {
@@ -21,6 +25,8 @@ interface ListingReddit {
 }
 
 async function compterReponsesReddit(url: string, o: OptionsCompterReponses): Promise<number> {
+  if (!o.redditUserAgent) return -1
+
   const donnees = await recupererJson<unknown>({
     source: 'recheck-reddit',
     url: `${url}.json`,

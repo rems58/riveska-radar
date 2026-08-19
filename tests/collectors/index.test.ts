@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { collecterTout } from '../../src/collectors/index.ts'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+import { collecterTout, collecteursParDefaut } from '../../src/collectors/index.ts'
+import { resetConfig } from '../../src/config.ts'
 import type { RawPost } from '../../src/types.ts'
 
 afterEach(() => vi.restoreAllMocks())
@@ -93,5 +94,74 @@ describe('collecterTout', () => {
     ])
     const messages = warnSpy.mock.calls.map((c) => String(c[0]))
     expect(messages.some((m) => m.includes('source-muette'))).toBe(true)
+  })
+})
+
+describe('collecteursParDefaut', () => {
+  const envSauvegarde = { ...process.env }
+
+  beforeEach(() => {
+    resetConfig()
+    process.env = { ...envSauvegarde }
+    process.env.TELEGRAM_BOT_TOKEN = 'token'
+    process.env.TELEGRAM_CHAT_ID = '123'
+    process.env.GOOGLE_SA_EMAIL = 'sa@projet.iam.gserviceaccount.com'
+    process.env.GOOGLE_SA_PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----'
+    process.env.SHEET_ID = 'sheet'
+    process.env.OPENROUTER_API_KEY = 'or'
+    delete process.env.REDDIT_CLIENT_ID
+    delete process.env.REDDIT_CLIENT_SECRET
+    delete process.env.REDDIT_USER_AGENT
+    delete process.env.BLUESKY_ID
+    delete process.env.BLUESKY_APP_PASSWORD
+  })
+
+  afterEach(() => {
+    resetConfig()
+    process.env = { ...envSauvegarde }
+  })
+
+  it('exclut reddit et bluesky de la liste quand leurs identifiants sont absents', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const sources = collecteursParDefaut()
+    const noms = sources.map((s) => s.nom)
+    expect(noms).not.toContain('reddit')
+    expect(noms).not.toContain('bluesky')
+    expect(noms).toEqual(['hackernews', 'stackoverflow', 'mastodon'])
+    // Signale une fois chacun, pour rester diagnosticable sans etre confondu par
+    // le garde-fou "source vide" (qui ne voit meme pas ces sources exclues).
+    const messages = warnSpy.mock.calls.map((c) => String(c[0]))
+    expect(messages.some((m) => m.includes('reddit'))).toBe(true)
+    expect(messages.some((m) => m.includes('bluesky'))).toBe(true)
+  })
+
+  it('inclut reddit quand ses trois identifiants sont presents', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    process.env.REDDIT_CLIENT_ID = 'id'
+    process.env.REDDIT_CLIENT_SECRET = 'secret'
+    process.env.REDDIT_USER_AGENT = 'ua'
+    const noms = collecteursParDefaut().map((s) => s.nom)
+    expect(noms).toContain('reddit')
+  })
+
+  it('inclut bluesky quand ses deux identifiants sont presents', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    process.env.BLUESKY_ID = 'moi.bsky.social'
+    process.env.BLUESKY_APP_PASSWORD = 'xxxx-xxxx-xxxx-xxxx'
+    const noms = collecteursParDefaut().map((s) => s.nom)
+    expect(noms).toContain('bluesky')
+  })
+
+  it('une source exclue de la liste ne declenche jamais le garde-fou "source vide"', async () => {
+    // Regression du fix : reddit/bluesky desactives ne doivent jamais etre
+    // confondus avec un flux casse par collecterTout, puisqu'ils n'apparaissent
+    // meme pas dans la liste passee a collecterTout.
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const onSourceVide = vi.fn()
+    const sources = collecteursParDefaut()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 200 })))
+    await collecterTout(sources, onSourceVide)
+    expect(onSourceVide).not.toHaveBeenCalledWith('reddit')
+    expect(onSourceVide).not.toHaveBeenCalledWith('bluesky')
   })
 })
