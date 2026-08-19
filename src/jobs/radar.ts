@@ -12,6 +12,13 @@ export interface DepsRadar {
   enrichir: (p: ScoredPost) => Promise<EnrichedPost | null>
   ecrireSheet: (posts: EnrichedPost[]) => Promise<number | null>
   notifier: (p: EnrichedPost, ligne: number | null) => Promise<boolean>
+  /**
+   * Notification texte simple (meme forme que jobs/recheck.ts et jobs/triggers.ts),
+   * utilisee uniquement quand un post est ABANDONNE definitivement (MAX_ECHECS_TECHNIQUES
+   * atteint) : sans elle, un post qui a deja coute des appels LLM disparait sans aucun
+   * temoin, sur un mini PC que personne ne surveille en continu.
+   */
+  notifierTexte: (texte: string) => Promise<boolean>
   seuil: number
   ageMaxJours: number
   retentionJours: number
@@ -23,6 +30,8 @@ export interface ResultatRadar {
   retenus: number
   purges: number
   notificationsEchouees: number
+  /** Posts abandonnes definitivement (MAX_ECHECS_TECHNIQUES atteint) sur ce run. */
+  abandons: number
 }
 
 /**
@@ -30,21 +39,36 @@ export interface ResultatRadar {
  * selon qu'il reste des tentatives ou que le post est desormais abandonne.
  * Les couches basses (http/llm/sheets/telegram) ne levent jamais : c'est ce chemin
  * (valeur null renvoyee), pas le try/catch, qui porte le gros du signal de panne.
+ *
+ * Renvoie true si le post vient d'etre abandonne definitivement (pour que l'appelant
+ * incremente son compteur) : un post abandonne a deja ete facture (scoring et/ou
+ * enrichissement LLM) sans jamais atteindre le Sheet - une notification Telegram avec
+ * l'URL est le seul moyen de le rattraper a la main.
  */
-function signalerEchecTechnique(
+async function signalerEchecTechnique(
   db: RadarDb,
+  notifierTexte: (texte: string) => Promise<boolean>,
   poste: { id: string; auteur: string; url: string },
   etape: string,
-): void {
+): Promise<boolean> {
   const echecs = db.enregistrerEchec({ id: poste.id, auteur: poste.auteur, url: poste.url })
-  if (echecs >= MAX_ECHECS_TECHNIQUES) {
-    console.warn(`[radar] pipeline : post ${poste.id} abandonne apres ${echecs} echecs (etape : ${etape})`)
-  } else {
+  if (echecs < MAX_ECHECS_TECHNIQUES) {
     console.warn(
       `[radar] pipeline : echec technique sur post ${poste.id} a l'etape "${etape}" ` +
         `(tentative ${echecs}/${MAX_ECHECS_TECHNIQUES}, nouvel essai au prochain run)`,
     )
+    return false
   }
+
+  console.warn(`[radar] pipeline : post ${poste.id} abandonne apres ${echecs} echecs (etape : ${etape})`)
+  const notifie = await notifierTexte(
+    `Prospect abandonne apres ${echecs} echecs techniques (etape : ${etape})\n` +
+      `${poste.url}\nDeja facture en LLM, jamais ecrit au Sheet - a verifier a la main si besoin.`,
+  )
+  if (!notifie) {
+    console.warn(`[radar] pipeline : notification d'abandon Telegram echouee pour ${poste.id}`)
+  }
+  return true
 }
 
 /**
@@ -73,14 +97,25 @@ export async function executerRadar(d: DepsRadar): Promise<ResultatRadar> {
 
   let retenus = 0
   let notificationsEchouees = 0
+  let abandons = 0
 
   for (const c of candidats) {
     try {
-      const apparitions = d.db.compterApparitions(c.auteur)
+      // Deux garde-fous contre un doublement de score errone :
+      // - excludeId (c.id) : un echec technique precedent sur CE MEME post a deja
+      //   cree une ligne pour son auteur (enregistrerEchec) ; sans exclusion, un
+      //   simple timeout transformerait le post en sa propre "apparition precedente"
+      //   et doublerait son propre score au run suivant.
+      // - 'inconnu' : versAuteur() renvoie 'inconnu' pour tout auteur absent/supprime,
+      //   partage par tous les posts anonymes de toutes les sources - deux posts
+      //   anonymes suffiraient a faire doubler le score d'un troisieme sans lien reel
+      //   entre eux. Un auteur inconnu n'a jamais d'historique exploitable : jamais
+      //   double dans ce cas.
+      const apparitions = c.auteur === 'inconnu' ? 0 : d.db.compterApparitions(c.auteur, c.id)
       const note = await d.noter(c, apparitions)
 
       if (note === null) {
-        signalerEchecTechnique(d.db, c, 'scoring')
+        if (await signalerEchecTechnique(d.db, d.notifierTexte, c, 'scoring')) abandons++
         continue
       }
 
@@ -92,14 +127,14 @@ export async function executerRadar(d: DepsRadar): Promise<ResultatRadar> {
 
       const enrichi = await d.enrichir(note)
       if (enrichi === null) {
-        signalerEchecTechnique(d.db, c, 'enrichissement')
+        if (await signalerEchecTechnique(d.db, d.notifierTexte, c, 'enrichissement')) abandons++
         continue
       }
 
       const ligne = await d.ecrireSheet([enrichi])
       if (ligne === null) {
         // Rien n'est arrive au prospect : ne pas notifier un succes qui n'a pas eu lieu.
-        signalerEchecTechnique(d.db, c, 'ecriture Sheet')
+        if (await signalerEchecTechnique(d.db, d.notifierTexte, c, 'ecriture Sheet')) abandons++
         continue
       }
 
@@ -127,7 +162,7 @@ export async function executerRadar(d: DepsRadar): Promise<ResultatRadar> {
       // fois - boucle de facturation infinie. Le plafond de MAX_ECHECS_TECHNIQUES
       // s'applique donc ici exactement comme sur les retours null.
       const raison = err instanceof Error ? err.message : String(err)
-      signalerEchecTechnique(d.db, c, `exception : ${raison}`)
+      if (await signalerEchecTechnique(d.db, d.notifierTexte, c, `exception : ${raison}`)) abandons++
     }
   }
 
@@ -137,13 +172,14 @@ export async function executerRadar(d: DepsRadar): Promise<ResultatRadar> {
     retenus,
     purges,
     notificationsEchouees,
+    abandons,
   }
   // Seule trace visible dans le Planificateur de taches Windows : un run silencieux
   // qui echoue partout resterait indetectable sans ce log.
   console.log(
     `[radar] run termine : ${resultat.collectes} collectes, ${resultat.candidats} candidats, ` +
       `${resultat.retenus} retenus, ${resultat.purges} purges, ` +
-      `${resultat.notificationsEchouees} notifications echouees`,
+      `${resultat.notificationsEchouees} notifications echouees, ${resultat.abandons} abandons`,
   )
   return resultat
 }

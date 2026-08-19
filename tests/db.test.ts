@@ -27,6 +27,15 @@ describe('RadarDb', () => {
     expect(db.compterApparitions('alice')).toBe(0)
   })
 
+  it('exclut le post dont l id est fourni (evite qu un post se compte lui-meme)', () => {
+    // Un echec technique cree une ligne pour CE post avant que son propre scoring
+    // soit retente : sans exclusion, il se compterait comme sa propre apparition
+    // precedente au run suivant et doublerait son propre score.
+    db.enregistrerEchec({ id: 'reddit:a', auteur: 'bob', url: 'https://r/1' })
+    expect(db.compterApparitions('bob', 'reddit:a')).toBe(0)
+    expect(db.compterApparitions('bob')).toBe(1)
+  })
+
   it('rend les posts a re-verifier une fois leur echeance passee', () => {
     const passe = new Date(Date.now() - 1000)
     const futur = new Date(Date.now() + 60_000)
@@ -110,6 +119,22 @@ describe('RadarDb', () => {
 
       const apresReset = db.enregistrerEchec({ id: 'reddit:x', auteur: 'bob', url: 'https://r/1' })
       expect(apresReset).toBe(1)
+    })
+  })
+
+  describe('sources vides', () => {
+    it('compte les incidents par source depuis une date', () => {
+      db.enregistrerSourceVide('bluesky')
+      db.enregistrerSourceVide('bluesky')
+      db.enregistrerSourceVide('mastodon')
+      const compte = db.compterSourcesVidesDepuis(new Date(Date.now() - 3600 * 1000))
+      expect(compte).toEqual({ bluesky: 2, mastodon: 1 })
+    })
+
+    it('ignore les incidents anterieurs a la date fournie', () => {
+      db.enregistrerSourceVide('bluesky')
+      const compte = db.compterSourcesVidesDepuis(new Date(Date.now() + 3600 * 1000))
+      expect(compte).toEqual({})
     })
   })
 

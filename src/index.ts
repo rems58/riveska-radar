@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url'
 import { getConfig } from './config.ts'
 import { ouvrirDb } from './db.ts'
 import type { RadarDb } from './db.ts'
-import { collecterTout, collecteursParDefaut } from './collectors/index.ts'
+import { collecterTout, collecteursParDefaut, avertirSourceVide } from './collectors/index.ts'
 import { noterPost } from './enrich/score.ts'
 import { enrichirPost } from './enrich/draft.ts'
 import { assurerEnTetes, ajouterLignes } from './sinks/sheets.ts'
@@ -85,12 +85,20 @@ async function commandeRadar(): Promise<void> {
 
   const resultat = await executerRadar({
     db: db(),
-    collecter: () => collecterTout(collecteursParDefaut()),
+    collecter: () =>
+      collecterTout(collecteursParDefaut(), (nom) => {
+        // Journalise (comportement par defaut) ET persiste, pour que le bilan
+        // hebdomadaire puisse signaler une source restee muette plusieurs jours,
+        // pas seulement le run courant.
+        avertirSourceVide(nom)
+        db().enregistrerSourceVide(nom)
+      }),
     noter: (p, apparitions) =>
       noterPost(p, { cle: cfg.openrouterApiKey, modele: cfg.openrouterModel, apparitionsPrecedentes: apparitions }),
     enrichir: (p) => enrichirPost(p, { cle: cfg.openrouterApiKey, modele: cfg.openrouterModel }),
     ecrireSheet: (posts) => ajouterLignes(posts, opts),
     notifier: (p, ligne) => envoyerTelegram(formaterProspect(p, ligne), optionsTelegram()),
+    notifierTexte: notifierTelegram,
     seuil: cfg.scoreThreshold,
     ageMaxJours: cfg.maxPostAgeDays,
     retentionJours: cfg.retentionDays,
@@ -119,6 +127,8 @@ async function commandeTriggers(): Promise<void> {
   console.log('[radar] commande "triggers" terminee :', resultat)
 }
 
+const SEPT_JOURS_MS = 7 * 24 * 3600 * 1000
+
 async function commandeWeekly(): Promise<void> {
   const opts = optionsSheets()
   const resultat = await executerWeekly({
@@ -127,7 +137,18 @@ async function commandeWeekly(): Promise<void> {
     notifier: notifierTelegram,
   })
 
-  console.log('[radar] commande "weekly" terminee :', resultat)
+  // Garde-fou "source vide" (collectors/index.ts) : signale dans le bilan hebdo une
+  // source restee muette plusieurs jours de suite, pas seulement journalisee en console
+  // (que personne ne lit sur un mini PC sans surveillance). Message separe pour ne pas
+  // toucher le format deja teste de executerWeekly/formaterStats.
+  const sourcesVides = db().compterSourcesVidesDepuis(new Date(Date.now() - SEPT_JOURS_MS))
+  const entrees = Object.entries(sourcesVides)
+  if (entrees.length > 0) {
+    const detail = entrees.map(([nom, n]) => `${nom} (${n}x)`).join(', ')
+    await notifierTelegram(`Sources muettes cette semaine (0 post alors que d'autres en ont renvoye) : ${detail}`)
+  }
+
+  console.log('[radar] commande "weekly" terminee :', resultat, '| sources vides:', sourcesVides)
 }
 
 /**

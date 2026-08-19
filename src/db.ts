@@ -26,7 +26,14 @@ export interface EntreeEchec {
 export interface RadarDb {
   dejaVu(id: string): boolean
   marquerVu(entree: EntreeVue): void
-  compterApparitions(auteur: string): number
+  /**
+   * Compte les apparitions PRECEDENTES d'un auteur (utilise pour doubler le score
+   * d'un prospect deja detecte). excludeId doit toujours etre l'id du post en cours
+   * de traitement : un echec technique (enregistrerEchec) cree une ligne pour ce
+   * meme post AVANT que son propre scoring soit retente, donc sans exclusion un
+   * post se compterait lui-meme comme "une apparition precedente" au run suivant.
+   */
+  compterApparitions(auteur: string, excludeId?: string): number
   aRecheck(): LigneRecheck[]
   marquerRecheckFait(id: string): void
   purger(retentionJours: number): number
@@ -40,6 +47,14 @@ export interface RadarDb {
    * (chaque tentative de scoring est payante).
    */
   enregistrerEchec(entree: EntreeEchec): number
+  /**
+   * Trace qu'une source de collecte a renvoye 0 post alors que d'autres en ont
+   * renvoye (voir collectors/index.ts). Permet au bilan hebdomadaire de signaler
+   * une source restee muette plusieurs jours de suite, pas seulement le run courant.
+   */
+  enregistrerSourceVide(nom: string): void
+  /** Nombre d'incidents "source vide" par source depuis une date (pour le bilan hebdo). */
+  compterSourcesVidesDepuis(depuis: Date): Record<string, number>
 }
 
 /** Nombre d'echecs techniques toleres avant d'abandonner definitivement un post. */
@@ -66,6 +81,11 @@ export function ouvrirDb(chemin: string): RadarDb {
     CREATE INDEX IF NOT EXISTS idx_posts_auteur ON posts_vus(auteur);
     CREATE INDEX IF NOT EXISTS idx_posts_recheck ON posts_vus(recheck_le, recheck_fait);
     CREATE INDEX IF NOT EXISTS idx_posts_vu_le ON posts_vus(vu_le);
+    CREATE TABLE IF NOT EXISTS sources_vides (
+      nom TEXT NOT NULL,
+      horodatage INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sources_vides_horodatage ON sources_vides(horodatage);
   `)
 
   // Migration non destructive : une base ouverte avant l'ajout du compteur d'echecs
@@ -118,10 +138,12 @@ export function ouvrirDb(chemin: string): RadarDb {
       })
     },
 
-    compterApparitions(auteur) {
-      const r = db.prepare('SELECT COUNT(*) AS n FROM posts_vus WHERE auteur = ?').get(auteur) as {
-        n: number
-      }
+    compterApparitions(auteur, excludeId) {
+      // id != '' est un sentinel inoffensif quand excludeId est absent : aucun id
+      // reel n'est jamais une chaine vide, donc rien n'est exclu dans ce cas.
+      const r = db
+        .prepare('SELECT COUNT(*) AS n FROM posts_vus WHERE auteur = ? AND id != ?')
+        .get(auteur, excludeId ?? '') as { n: number }
       return r.n
     },
 
@@ -169,6 +191,19 @@ export function ouvrirDb(chemin: string): RadarDb {
 
       const r = db.prepare('SELECT echecs FROM posts_vus WHERE id = ?').get(e.id) as { echecs: number }
       return r.echecs
+    },
+
+    enregistrerSourceVide(nom) {
+      db.prepare('INSERT INTO sources_vides (nom, horodatage) VALUES (?, ?)').run(nom, Date.now())
+    },
+
+    compterSourcesVidesDepuis(depuis) {
+      const lignes = db
+        .prepare('SELECT nom, COUNT(*) AS n FROM sources_vides WHERE horodatage >= ? GROUP BY nom')
+        .all(depuis.getTime()) as { nom: string; n: number }[]
+      const resultat: Record<string, number> = {}
+      for (const l of lignes) resultat[l.nom] = l.n
+      return resultat
     },
   }
 }

@@ -23,6 +23,7 @@ function deps(over: Partial<Parameters<typeof executerRadar>[0]> = {}) {
     }),
     ecrireSheet: vi.fn(async () => 10),
     notifier: vi.fn(async () => true),
+    notifierTexte: vi.fn(async () => true),
     seuil: 60,
     ageMaxJours: 30,
     retentionJours: 90,
@@ -86,18 +87,27 @@ describe('executerRadar', () => {
     expect(d.notifier).not.toHaveBeenCalled()
   })
 
-  it('abandonne definitivement un post apres 3 echecs techniques consecutifs', async () => {
+  it('abandonne definitivement un post apres 3 echecs techniques consecutifs, et notifie', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const db = ouvrirDb(':memory:')
     const noter = vi.fn(async () => null)
-    const base = deps({ db, collecter: async () => [raw('reddit:a')], noter })
+    const notifierTexte = vi.fn(async (_texte: string) => true)
+    const base = deps({ db, collecter: async () => [raw('reddit:a')], noter, notifierTexte })
 
     await executerRadar(base)
-    await executerRadar(base)
+    const r2 = await executerRadar(base)
+    expect(r2.abandons).toBe(0)
     const r3 = await executerRadar(base)
     expect(r3.retenus).toBe(0)
+    expect(r3.abandons).toBe(1)
     expect(db.dejaVu('reddit:a')).toBe(true)
     expect(noter).toHaveBeenCalledTimes(3)
+
+    // La notification d'abandon doit porter l'URL du post, seul moyen de le
+    // rattraper a la main - il a deja coute des appels LLM et n'a jamais atteint le Sheet.
+    expect(notifierTexte).toHaveBeenCalledTimes(1)
+    expect(notifierTexte.mock.calls[0]![0]).toContain('https://reddit.com/reddit:a')
+    expect(notifierTexte.mock.calls[0]![0]).toContain('abandonne')
 
     // 4e run : le post est deja "vu" (abandonne), donc filtre avant meme d'atteindre noter.
     const r4 = await executerRadar(base)
@@ -126,6 +136,62 @@ describe('executerRadar', () => {
 
     const logAbandon = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('abandonne'))
     expect(logAbandon).toBeDefined()
+  })
+
+  it('journalise (mais ne bloque pas le run) si la notification d abandon echoue', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const db = ouvrirDb(':memory:')
+    const noter = vi.fn(async () => null)
+    const notifierTexte = vi.fn(async () => false)
+    const base = deps({ db, collecter: async () => [raw('reddit:a')], noter, notifierTexte })
+
+    await executerRadar(base)
+    await executerRadar(base)
+    const r3 = await executerRadar(base)
+
+    expect(r3.abandons).toBe(1)
+    const log = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes("notification d'abandon"))
+    expect(log).toBeDefined()
+  })
+
+  it('n inclut pas l echec technique du post lui-meme dans son propre comptage d apparitions', async () => {
+    // Run 1 : echec technique -> une ligne "bob" est creee par enregistrerEchec.
+    // Run 2 : le meme post reussit -> sans l'exclusion (Fix 5), il se compterait
+    // lui-meme comme "1 apparition precedente" et son score serait double a tort.
+    const db = ouvrirDb(':memory:')
+    let appel = 0
+    const noter = vi.fn(async (p: RawPost, _apparitions: number): Promise<ScoredPost | null> => {
+      appel++
+      if (appel === 1) return null // echec technique au run 1
+      return { ...p, score: 45, langue: 'en' as const, probleme: 'x' }
+    })
+    const base = deps({ db, collecter: async () => [raw('reddit:a')], noter })
+
+    await executerRadar(base) // run 1 : echec technique
+    await executerRadar(base) // run 2 : reussit
+
+    // apparitions doit valoir 0 au run 2 : le post ne s'est jamais "deja" produit.
+    const derniersArgs = noter.mock.calls[1]!
+    expect(derniersArgs[1]).toBe(0)
+  })
+
+  it('ne double jamais le score quand l auteur vaut "inconnu" (partage par tous les anonymes)', async () => {
+    const db = ouvrirDb(':memory:')
+    // Deux posts anonymes deja vus : avec le bug, un troisieme anonyme se verrait
+    // attribuer 2 "apparitions precedentes" sans aucun lien reel entre les auteurs.
+    db.marquerVu({ id: 'reddit:x', auteur: 'inconnu', url: 'u1', score: 50 })
+    db.marquerVu({ id: 'reddit:y', auteur: 'inconnu', url: 'u2', score: 50 })
+
+    const noter = vi.fn(async (p: RawPost, _apparitions: number): Promise<ScoredPost | null> => ({
+      ...p, score: 90, langue: 'en' as const, probleme: 'x',
+    }))
+    const posteAnonyme = { ...raw('reddit:z'), auteur: 'inconnu' }
+    const base = deps({ db, collecter: async () => [posteAnonyme], noter })
+
+    await executerRadar(base)
+
+    const argsAppel = noter.mock.calls[0]!
+    expect(argsAppel[1]).toBe(0)
   })
 
   it('memorise le post retenu pour ne pas le retraiter', async () => {
