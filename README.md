@@ -19,6 +19,8 @@ de commentaire a la place de quelqu'un.
 - Mastodon
 - Bluesky (necessite `BLUESKY_ID`/`BLUESKY_APP_PASSWORD`, facultatifs - voir tableau
   ci-dessous ; sans eux, la source se desactive proprement)
+- Reddit, via **`search.rss`** uniquement, sur sa propre commande horaire (`reddit`) -
+  voir la section dediee ci-dessous
 - Annonces Apple/Google elles-memes (`jobs/triggers.ts`, flux distinct des sources
   ci-dessus - detecte une nouvelle exigence de publication avant qu'elle ne deborde
   en vague de questions)
@@ -29,15 +31,68 @@ prospects serait de scraper les pages, ce qui viole leurs conditions d'utilisati
 expose le compte utilise a un bannissement pur et simple. Le risque (perte du compte,
 image degradee) depasse largement la valeur d'une source supplementaire.
 
-**Reddit n'est plus une source active : l'API a ferme la creation d'applications en
-libre-service.** Verifie en appel reel (2026-08-19) : `reddit.com/prefs/apps` refuse la
-creation, `/new.json` et `/search.json` renvoient 403 meme avec un user-agent de
-navigateur, et Reddit exige desormais une approbation ecrite explicite pour tout usage
-commercial - ce que ce radar est. La source reste dans le code (`src/collectors/reddit.ts`,
-facultative comme Bluesky, `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`/`REDDIT_USER_AGENT`
-dans `.env`) : si un accord Reddit arrive un jour, coller les cles suffit a la reveiller,
-aucun autre changement necessaire. Sans elles, `collecteursParDefaut()` exclut Reddit de
-la liste des sources plutot que d'echouer au demarrage.
+## Reddit : de retour, mais uniquement via `search.rss`
+
+L'**API OAuth de Reddit reste fermee** en creation d'application libre-service
+(Responsible Builder Policy, verifie en appel reel : `reddit.com/prefs/apps` refuse
+la creation, `/new.json`/`/search.json` renvoient 403, `api/v1/access_token` 401 -
+une approbation ecrite explicite est desormais exigee pour tout usage commercial).
+Ces chemins (tout `/.json`, l'API OAuth) restent **deliberement hors limites** dans
+tout ce projet : ce n'est pas une preference, c'est un controle d'acces ferme qu'on
+ne contourne jamais. `src/collectors/reddit.ts` (OAuth) reste dans le code,
+desactivee, facultative comme Bluesky (`REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`/
+`REDDIT_USER_AGENT` dans `.env`) : si un accord Reddit arrive un jour, coller les
+cles suffit a la reveiller.
+
+**Reddit sert deliberement `search.rss` pour la syndication** - un lecteur de flux
+qui le consomme utilise le flux comme prevu, ce n'est pas un contournement du 403.
+`src/collectors/reddit-rss.ts` interroge `search.rss` (format Atom) pour une
+douzaine de requetes couvrant les 5 langues, dans les memes signaux de douleur que
+les autres sources (`filter/keywords.ts`).
+
+**Debit strict et mesure : 1 requete par minute, en sequentiel.** 5 requetes
+espacees de 3s ont donne 1 succes puis 4 echecs 429 ; apres un premier 429, les
+delais de reprise mesures n'ont pas ete strictement monotones (succes a +20s et
++45s, echec a +30s - une fenetre glissante cote Reddit est probable). Consequence :
+- **Jamais de parallelisme** sur cette source, contrairement aux autres.
+- **Une commande separee (`reddit`), planifiee une fois par heure** - pas dans
+  `radar` (toutes les 15 min, en parallele) : l'y greffer casserait soit la
+  cadence de radar, soit la politesse envers Reddit. 12 requetes x 1/min = jusqu'a
+  12 minutes par run, largement dans les clous d'une cadence horaire.
+- Sur un 429, une seule retentative apres un delai plus long, puis abandon propre
+  de cette requete (les autres continuent).
+
+Reutilise **exactement le meme pipeline aval** que `radar` (`jobs/pipeline.ts`,
+factorise pour les deux jobs) : meme deduplication, memes compteurs d'echecs et
+d'abandons, meme verrou. L'id d'un post est construit **de la meme facon** que
+par l'API OAuth (`reddit:<id>`, sans le prefixe `t3_` de search.rss) : si l'API
+OAuth redevient active un jour en plus de `search.rss`, aucun doublon n'est
+possible - c'est la meme base de deduplication qui tranche.
+
+**Le suivi 48h (`recheck`) ne s'applique jamais a Reddit**, quelle que soit la
+source qui a collecte le post : compter les reponses d'un post precis exigerait
+`<url>.json`, le meme genre de chemin ferme evoque plus haut. Voir le tableau
+"Suivi 48h" plus bas.
+
+**`search.rss` est bruyant : verifie sur des donnees reelles.** Une recherche
+"app rejected" reelle a renvoye 25 entrees (22 posts + 3 resultats de subreddits,
+ignores) ; la majorite n'a aucun rapport avec Riveska (Reddit fait du matching flou,
+pas une recherche par phrase exacte - "getting is rejection... dating apps" est
+remonte pour "app rejected" sans contenir cette phrase). Le prefiltre existant
+(phrases exactes, `filter/keywords.ts`) a correctement ecarte ce bruit. Deux
+constats reels, assumes :
+- **Un faux positif mesure** : un post sans rapport (methodologie personnelle
+  d'usage de chatbots IA) a passe le prefiltre via le signal `vibe coding`, cite en
+  passant sans lien avec une app ou un store. Non corrige ici : le signal LLM
+  suivant (`enrich/score.ts`, seuil 0-39 = hors sujet) l'aurait rejete pour le prix
+  d'un seul appel LLM bon marche - un cout marginal, pas un risque de polluer le Sheet.
+- **Des faux negatifs reels, non corriges** : deux posts genuinement pertinents de
+  cet echantillon ("rejected due to privacy policy violation", "faced 'design spam'
+  rejection") n'ont matche aucune phrase exacte de `SIGNAUX_DOULEUR` (prose
+  naturelle, pas les titres factuels d'un Stack Overflow). Corriger `SIGNAUX_DOULEUR`
+  impacterait les 6 autres collecteurs qui le partagent : hors perimetre de ce
+  changement, qui se limite a Reddit. A garder en tete pour un futur ajustement du
+  prefiltre, teste separement sur toutes les sources.
 
 **Un flux "forums" (forums.expo.dev + developer.apple.com/forums) a existe puis a ete
 retire.** Verifie en appel reel : les deux flux sont morts - Expo redirige entierement
@@ -78,7 +133,8 @@ Node 24 execute directement les fichiers `.ts` (aucune compilation ni ts-node ne
 ## Commandes npm
 
 ```bash
-npm run radar     # collecte + score + enrichit + ecrit le Sheet + notifie Telegram
+npm run radar     # sources paralleles (HN, SO, Mastodon, Bluesky) + pipeline complet
+npm run reddit    # Reddit via search.rss, sequentiel a 1 req/min - a part de radar
 npm run recheck   # relance 48h : signale les prospects toujours sans reponse
 npm run triggers  # surveille les annonces Apple/Google (nouvelles exigences)
 npm run weekly    # bilan hebdomadaire du taux de reponse
@@ -86,8 +142,9 @@ npm test          # suite de tests (vitest)
 npm run typecheck # verification TypeScript stricte, sans emission
 ```
 
-Equivalent direct sans passer par npm : `node src/index.ts radar` (idem pour `recheck`,
-`triggers`, `weekly`).
+Equivalent direct sans passer par npm : `node src/index.ts radar` (idem pour `reddit`,
+`recheck`, `triggers`, `weekly`). `reddit` prend jusqu'a une douzaine de minutes (debit
+impose par Reddit, voir plus haut) - c'est normal, ce n'est pas un blocage.
 
 La base locale `radar.db` (SQLite) est creee automatiquement a la racine du projet au
 premier lancement - elle memorise les posts deja vus pour ne jamais les retraiter deux
@@ -127,16 +184,20 @@ qui exposent une API publique adaptee :
 | Stack Overflow | oui (`answer_count`, API StackExchange) |
 | Bluesky | non |
 | Mastodon | non |
-| Reddit | non applicable - source desactivee (voir "Sources surveillees") |
+| Reddit | **jamais**, meme collecte via `search.rss` - voir ci-dessous |
 
 Bluesky et Mastodon n'exposent pas d'equivalent simple et sans cle pour compter les
 reponses a un post precis : ces prospects ne declenchent jamais la
 notification "toujours sans reponse apres 48h", meme s'ils restent effectivement sans
 reponse. Ce n'est pas un bug silencieux : c'est une limite connue, documentee ici plutot
-que de laisser croire a une couverture universelle. Le code de suivi Reddit
-(`jobs/recheck-compteurs.ts`) reste en place et se reactiverait avec la source si un
-accord Reddit arrive un jour, mais degrade proprement en "inconnu" tant qu'elle est
-desactivee.
+que de laisser croire a une couverture universelle.
+
+**Reddit n'aura jamais de suivi 48h, meme collecte active.** Compter les reponses d'un
+post precis exigerait `<url>.json` - le meme genre de chemin que `/new.json`/`/search.json`,
+que Reddit garde deliberement ferme (voir "Reddit : de retour, mais uniquement via
+search.rss" plus haut). C'est une contrainte permanente de ce projet, pas une limite
+technique temporaire : `compterReponsesReddit()` renvoie -1 inconditionnellement, sans
+appel reseau, quelle que soit la source qui a collecte le post.
 
 ## Planification Windows
 
@@ -147,11 +208,12 @@ Le radar doit tourner en continu. Sous Windows, le Planificateur de taches s'en 
 .\scripts\installer-taches.ps1
 ```
 
-Cela enregistre quatre taches :
+Cela enregistre cinq taches :
 
 | Tache | Frequence |
 |---|---|
 | `RiveskaRadar-Radar` | toutes les 15 minutes |
+| `RiveskaRadar-Reddit` | toutes les heures - jamais plus souvent (debit Reddit) |
 | `RiveskaRadar-Recheck` | toutes les 6 heures |
 | `RiveskaRadar-Triggers` | tous les jours a 9h |
 | `RiveskaRadar-Weekly` | le lundi a 9h |
@@ -253,8 +315,9 @@ le meme probleme - elle vaut plus qu'un message prive, pas moins.
 
 ## Cout mensuel
 
-Toutes les sources de collecte actives (Hacker News, Stack Overflow, Bluesky, Mastodon)
-et Telegram sont gratuites - le mot de passe d'application Bluesky aussi. Google Sheets
+Toutes les sources de collecte actives (Hacker News, Stack Overflow, Bluesky, Mastodon,
+Reddit via `search.rss`) et Telegram sont gratuites - le mot de passe d'application
+Bluesky aussi. Google Sheets
 est gratuit dans les volumes de cet outil.
 Seul le LLM (OpenRouter) coute reellement : de l'ordre de **3 a 8 EUR par mois** selon le
 volume de posts collectes et le modele choisi (`OPENROUTER_MODEL`).
@@ -285,6 +348,18 @@ terminal (le PATH ne se met a jour que dans les nouvelles sessions), puis relanc
 script. Un job planifie deja enregistre qui perd Node en cours de route (desinstallation,
 deplacement) l'ecrit dans son propre log au lieu d'echouer en silence - inutile de
 relancer `installer-taches.ps1` pour une simple mise a jour de Node au meme emplacement.
+
+**`reddit` renvoie 0 posts, les logs montrent des 403 sur `search.rss`**
+Verifie en execution reelle (2026-08-19) : le collecteur respecte scrupuleusement 1
+requete/minute (espacement mesure : 60,1s et 60,3s), mais Reddit peut malgre tout
+repondre 403 pendant un moment si l'IP a subi plusieurs requetes trop rapprochees
+PEU AVANT - meme des tests manuels isoles (un `curl` rapide pour verifier un flux, par
+exemple) comptent. Le comportement mesure n'est pas parfaitement previsible (un retry a
++45s a reussi, un a +30s a echoue) : une fenetre glissante cote Reddit est probable. Il
+n'y a rien a corriger dans ce cas - la commande `reddit` continue de tourner une fois par
+heure sans forcer le rythme, et le blocage se leve de lui-meme apres un certain temps
+sans requete. Ne JAMAIS reduire `DELAI_ENTRE_REQUETES_MS` ni lancer `reddit` manuellement
+en boucle pour "tester" : ca prolonge le blocage plutot que de le resoudre.
 
 **Telegram ne notifie jamais**
 1. Verifier que `TELEGRAM_CHAT_ID` est correct : relancer `getUpdates` (voir tableau
