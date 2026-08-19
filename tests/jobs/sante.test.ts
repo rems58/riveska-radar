@@ -38,6 +38,15 @@ function utf16leAvecBom(texte: string): Buffer {
   return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(texte, 'utf16le')])
 }
 
+/** Retrouve une ligne du rapport par le fragment de texte qu'elle contient. */
+function ligneDe(blocs: Bloc[], titre: string, fragment: string) {
+  const bloc = blocs.find((b) => b.titre === titre)
+  if (!bloc) throw new Error(`bloc "${titre}" absent du rapport`)
+  const ligne = bloc.lignes.find((l) => l.texte.includes(fragment))
+  if (!ligne) throw new Error(`aucune ligne "${fragment}" dans le bloc "${titre}" : ${JSON.stringify(bloc.lignes)}`)
+  return ligne
+}
+
 describe('decoderTexteLog', () => {
   it('decode un log PowerShell en UTF-16LE avec BOM', () => {
     const buf = utf16leAvecBom('[radar] commande "radar" terminee : ok\r\n')
@@ -123,8 +132,14 @@ describe('dernierRunTermine', () => {
 const ENTETE_CSV =
   '"HostName","TaskName","Next Run Time","Status","Logon Mode","Last Run Time","Last Result","Author","Task To Run"'
 
-function ligneTache(nom: string, prochaine: string, statut: string, resultat: string): string {
-  return `"MINIPC","\\${nom}","${prochaine}","${statut}","Interactive/Background","19/08/2026 17:00:00","${resultat}","MINIPC\\rems","powershell.exe"`
+function ligneTache(
+  nom: string,
+  prochaine: string,
+  statut: string,
+  resultat: string,
+  dernierRun = '19/08/2026 17:00:00',
+): string {
+  return `"MINIPC","\\${nom}","${prochaine}","${statut}","Interactive/Background","${dernierRun}","${resultat}","MINIPC\\rems","powershell.exe"`
 }
 
 describe('analyserTachesCsv', () => {
@@ -513,5 +528,141 @@ describe('executerSante', () => {
     expect(verifierTelegram).not.toHaveBeenCalled()
     expect(verifierOpenrouter).not.toHaveBeenCalled()
     expect(r.rapport).toContain('TELEGRAM_BOT_TOKEN')
+  })
+
+  // -------------------------------------------------------------------------
+  // Faux positifs observes au premier lancement sur le mini PC de production :
+  // le bloc Logs concluait a la panne sur des etats que les blocs Verrous et
+  // Taches, dans la MEME sortie, declaraient normaux.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Etat reel quelques heures apres l'installation des taches : radar a tourne,
+   * reddit tourne en ce moment, les trois autres ne se sont jamais declenchees.
+   */
+  const CSV_JUSTE_INSTALLE = [
+    ENTETE_CSV,
+    ligneTache('RiveskaRadar-Radar', '19/08/2026 18:14:51', 'Ready', '0'),
+    ligneTache('RiveskaRadar-Reddit', '19/08/2026 18:59:51', 'Running', '267009'),
+    ligneTache('RiveskaRadar-Recheck', '19/08/2026 22:59:51', 'Ready', '267011', 'N/A'),
+    ligneTache('RiveskaRadar-Triggers', '20/08/2026 09:00:00', 'Ready', '267011', 'N/A'),
+    ligneTache('RiveskaRadar-Weekly', '24/08/2026 09:00:00', 'Ready', '267011', 'N/A'),
+  ].join('\r\n')
+
+  /** Un log en cours d'ecriture : le run a commence, la ligne de fin n'existe pas encore. */
+  const LOG_SANS_FIN = '[radar] reddit : collecte rss en cours\r\n'
+
+  it('ne prend pas un run en cours pour un run interrompu (verrou tenu)', async () => {
+    tousLesLogsFrais()
+    ecrireLog('reddit', 6 * MINUTE, LOG_SANS_FIN)
+    writeFileSync(
+      path.join(racine, 'reddit.lock'),
+      JSON.stringify({ pid: process.pid, horodatage: MAINTENANT.getTime() - MINUTE }),
+    )
+
+    const r = await executerSante(deps())
+
+    const ligne = ligneDe(r.blocs, 'Logs', 'reddit.log')
+    expect(ligne.marqueur).toBe('OK')
+    expect(ligne.texte).toContain('en cours')
+    expect(ligne.texte).toContain('1 min')
+    expect(ligne.texte).not.toContain('interrompu')
+    expect(r.ok).toBe(true)
+  })
+
+  it('ne prend pas un run en cours pour un run interrompu quand seul le Planificateur le sait', async () => {
+    tousLesLogsFrais()
+    ecrireLog('reddit', 6 * MINUTE, LOG_SANS_FIN)
+
+    const r = await executerSante(deps({ lireTaches: async () => CSV_JUSTE_INSTALLE }))
+
+    const ligne = ligneDe(r.blocs, 'Logs', 'reddit.log')
+    expect(ligne.marqueur).toBe('OK')
+    expect(ligne.texte).toContain('en cours')
+    expect(ligne.texte).not.toContain('interrompu')
+    expect(r.ok).toBe(true)
+  })
+
+  it('ne signale pas le log absent d une tache jamais declenchee (attente, pas panne)', async () => {
+    ecrireLog('radar', 5 * MINUTE)
+    ecrireLog('reddit', 6 * MINUTE)
+
+    const r = await executerSante(deps({ lireTaches: async () => CSV_JUSTE_INSTALLE }))
+
+    for (const commande of ['recheck', 'triggers', 'weekly']) {
+      const ligne = ligneDe(r.blocs, 'Logs', `${commande}.log`)
+      expect(ligne.marqueur).toBe('--')
+      expect(ligne.texte).toContain('jamais declenchee')
+    }
+    expect(r.ok).toBe(true)
+  })
+
+  it('signale toujours le log absent d une tache qui s est deja executee', async () => {
+    ecrireLog('radar', 5 * MINUTE)
+    ecrireLog('reddit', 6 * MINUTE)
+    // Recheck a tourne (resultat 0) sans jamais rien ecrire : la, c'est un vrai defaut.
+    const csv = [
+      ENTETE_CSV,
+      ligneTache('RiveskaRadar-Radar', '19/08/2026 18:14:51', 'Ready', '0'),
+      ligneTache('RiveskaRadar-Reddit', '19/08/2026 18:59:51', 'Ready', '0'),
+      ligneTache('RiveskaRadar-Recheck', '19/08/2026 22:59:51', 'Ready', '0'),
+      ligneTache('RiveskaRadar-Triggers', '20/08/2026 09:00:00', 'Ready', '267011', 'N/A'),
+      ligneTache('RiveskaRadar-Weekly', '24/08/2026 09:00:00', 'Ready', '267011', 'N/A'),
+    ].join('\r\n')
+
+    const r = await executerSante(deps({ lireTaches: async () => csv }))
+
+    expect(ligneDe(r.blocs, 'Logs', 'recheck.log').marqueur).toBe('!!')
+    expect(r.ok).toBe(false)
+  })
+
+  it('signale toujours un log sans fin de run quand aucun run ne tourne', async () => {
+    tousLesLogsFrais()
+    ecrireLog('reddit', 6 * MINUTE, LOG_SANS_FIN)
+
+    // Aucun verrou, et le Planificateur declare reddit au repos.
+    const r = await executerSante(deps())
+
+    expect(ligneDe(r.blocs, 'Logs', 'reddit.log').marqueur).toBe('!!')
+    expect(r.rapport).toContain('interrompu')
+    expect(r.ok).toBe(false)
+  })
+
+  it('garde la fraicheur comme signal fort sur une tache qui, elle, s est deja lancee', async () => {
+    tousLesLogsFrais()
+    ecrireLog('radar', 6 * HEURE)
+
+    const r = await executerSante(deps({ lireTaches: async () => CSV_JUSTE_INSTALLE }))
+
+    const ligne = ligneDe(r.blocs, 'Logs', 'radar.log')
+    expect(ligne.marqueur).toBe('!!')
+    expect(ligne.texte).toContain('Planificateur')
+    expect(r.ok).toBe(false)
+  })
+
+  it('ne juge pas la fraicheur du log d une tache jamais declenchee', async () => {
+    tousLesLogsFrais()
+    // Log laisse par un lancement manuel il y a longtemps, la tache n a jamais tourne.
+    ecrireLog('weekly', 30 * 24 * HEURE)
+
+    const r = await executerSante(deps({ lireTaches: async () => CSV_JUSTE_INSTALLE }))
+
+    expect(ligneDe(r.blocs, 'Logs', 'weekly.log').marqueur).not.toBe('!!')
+    expect(r.ok).toBe(true)
+  })
+
+  it('rend 0 sur l etat observe au premier lancement (les quatre !! etaient faux)', async () => {
+    ecrireLog('radar', 5 * MINUTE)
+    ecrireLog('reddit', 6 * MINUTE, LOG_SANS_FIN)
+    writeFileSync(
+      path.join(racine, 'reddit.lock'),
+      JSON.stringify({ pid: process.pid, horodatage: MAINTENANT.getTime() - MINUTE }),
+    )
+
+    const r = await executerSante(deps({ lireTaches: async () => CSV_JUSTE_INSTALLE }))
+
+    expect(r.rapport).not.toContain('!!')
+    expect(r.rapport).toContain('Conclusion : tout va bien')
+    expect(r.ok).toBe(true)
   })
 })

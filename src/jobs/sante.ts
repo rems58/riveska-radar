@@ -311,6 +311,8 @@ export interface TacheInfo {
   nom: string
   prochaine: string
   statut: string
+  /** Horodatage du dernier declenchement tel qu'affiche par schtasks, brut. */
+  dernierRun: string
   /** Code de sortie du dernier run, ou null si illisible. */
   dernierResultat: number | null
 }
@@ -323,6 +325,7 @@ export interface TacheInfo {
 const IDX_NOM = 1
 const IDX_PROCHAINE = 2
 const IDX_STATUT = 3
+const IDX_DERNIER_RUN = 5
 const IDX_RESULTAT = 6
 
 function decouperCsv(ligne: string): string[] {
@@ -364,10 +367,37 @@ export function analyserTachesCsv(csv: string): TacheInfo[] {
       nom: chemin.split('\\').filter(Boolean).pop() ?? chemin,
       prochaine: (champs[IDX_PROCHAINE] ?? '').trim(),
       statut: (champs[IDX_STATUT] ?? '').trim(),
+      dernierRun: (champs[IDX_DERNIER_RUN] ?? '').trim(),
       dernierResultat: Number.isFinite(resultat) ? resultat : null,
     })
   }
   return taches
+}
+
+/**
+ * Sentinelles ecrites par schtasks dans la colonne "Last Run Time" d'une tache qui
+ * ne s'est encore jamais declenchee : "N/A" selon la langue, ou la date plancher du
+ * Planificateur (30/11/1999, affichee dans l'ordre local).
+ */
+const DERNIER_RUN_ABSENT = [/^n\s*\/?\s*a$/i, /^30[/-]11[/-]1999/, /^11[/-]30[/-]1999/, /^1999-11-30/]
+
+/**
+ * Vrai quand la tache est enregistree mais n'a jamais tourne : etat NORMAL des
+ * premieres heures apres l'installation, et etat permanent d'une tache hebdomadaire
+ * installee en milieu de semaine. Rien de ce qu'elle aurait du produire (son log,
+ * en particulier) ne peut exister : ce n'est pas une panne, c'est une attente.
+ */
+export function jamaisDeclenchee(t: TacheInfo): boolean {
+  if (t.dernierResultat === CODE_JAMAIS_DECLENCHEE) return true
+  // Un run reussi ou en cours prime toujours sur une colonne "dernier run" douteuse :
+  // mieux vaut manquer l'etat d'attente que contredire le reste du rapport.
+  if (t.dernierResultat === 0 || tacheEnCours(t)) return false
+  return t.dernierRun === '' || DERNIER_RUN_ABSENT.some((r) => r.test(t.dernierRun))
+}
+
+/** Vrai quand le Planificateur declare la tache en cours d'execution a cet instant. */
+export function tacheEnCours(t: TacheInfo): boolean {
+  return t.dernierResultat === CODE_EN_COURS || /running|en cours|s.ex[ée]cute/i.test(t.statut)
 }
 
 // ---------------------------------------------------------------------------
@@ -661,14 +691,45 @@ function lireVerrou(chemin: string): ContenuVerrou | null {
   return null
 }
 
-function blocVerrou(d: DepsSante, maintenant: Date): Bloc {
-  const lignes: Ligne[] = []
+/** Verrou present sur le disque, deja interprete : lu une seule fois, exploite deux fois. */
+interface EtatVerrou {
+  commande: CommandeSurveillee
+  /** null = fichier illisible ou corrompu. */
+  contenu: ContenuVerrou | null
+  /** Duree ecoulee depuis la pose du verrou, donc depuis le debut du run. */
+  age: number
+  /** true = le process qui l'a pose tourne toujours, un run est donc reellement en cours. */
+  vivant: boolean
+}
+
+/**
+ * Lit tous les *.lock une bonne fois. Le bloc Verrous les met en forme, le bloc Logs
+ * s'en sert pour savoir quels runs tournent encore : les deux doivent raconter la
+ * meme chose, ils partent donc de la meme lecture.
+ */
+function lireVerrous(d: DepsSante, maintenant: Date): EtatVerrou[] {
+  const etats: EtatVerrou[] = []
 
   for (const commande of COMMANDES_SURVEILLEES) {
     const chemin = path.join(d.racine, `${commande}.lock`)
     if (!existsSync(chemin)) continue
 
     const contenu = lireVerrou(chemin)
+    etats.push({
+      commande,
+      contenu,
+      age: contenu ? maintenant.getTime() - contenu.horodatage : 0,
+      vivant: contenu !== null && processVivant(contenu.pid),
+    })
+  }
+
+  return etats
+}
+
+function blocVerrou(verrous: EtatVerrou[]): Bloc {
+  const lignes: Ligne[] = []
+
+  for (const { commande, contenu, age, vivant } of verrous) {
     if (!contenu) {
       lignes.push(
         ko(
@@ -679,8 +740,7 @@ function blocVerrou(d: DepsSante, maintenant: Date): Bloc {
       continue
     }
 
-    const age = maintenant.getTime() - contenu.horodatage
-    if (!processVivant(contenu.pid)) {
+    if (!vivant) {
       lignes.push(
         ko(
           `${commande}.lock laisse par un process disparu (pid ${contenu.pid}, il y a ${formaterAge(age)}) - ` +
@@ -704,19 +764,18 @@ function blocVerrou(d: DepsSante, maintenant: Date): Bloc {
   return { titre: 'Verrous', lignes }
 }
 
-function blocTaches(csv: string | null, plateforme: string): Bloc {
+function blocTaches(taches: TacheInfo[] | null, plateforme: string): Bloc {
   const lignes: Ligne[] = []
 
   if (plateforme !== 'win32') {
     lignes.push(off(`taches planifiees non verifiees : Planificateur Windows uniquement (ici ${plateforme})`))
     return { titre: 'Taches planifiees', lignes }
   }
-  if (csv === null) {
+  if (taches === null) {
     lignes.push(off('schtasks n a pas repondu - taches planifiees non verifiees'))
     return { titre: 'Taches planifiees', lignes }
   }
 
-  const taches = analyserTachesCsv(csv)
   if (taches.length === 0) {
     lignes.push(
       off(
@@ -749,9 +808,9 @@ function blocTaches(csv: string | null, plateforme: string): Bloc {
     const prochaine = tache.prochaine ? `, prochaine ${tache.prochaine}` : ''
     if (tache.dernierResultat === 0) {
       lignes.push(ok(`${nom} : dernier run reussi${prochaine}`))
-    } else if (tache.dernierResultat === CODE_JAMAIS_DECLENCHEE) {
+    } else if (jamaisDeclenchee(tache)) {
       lignes.push(ok(`${nom} : jamais declenchee pour l'instant (normal juste apres l'installation)${prochaine}`))
-    } else if (tache.dernierResultat === CODE_EN_COURS) {
+    } else if (tacheEnCours(tache)) {
       lignes.push(ok(`${nom} : en cours d'execution${prochaine}`))
     } else {
       lignes.push(
@@ -766,7 +825,49 @@ function blocTaches(csv: string | null, plateforme: string): Bloc {
   return { titre: 'Taches planifiees', lignes }
 }
 
-function blocLogs(d: DepsSante, maintenant: Date): Bloc {
+/** Run reellement en cours au moment ou sante s'execute. */
+interface RunEnCours {
+  /** Duree ecoulee depuis le debut du run, ou null quand seul le Planificateur le signale. */
+  depuis: number | null
+  source: 'verrou' | 'planificateur'
+}
+
+/**
+ * Ce que sante sait DEJA de l'etat courant quand elle attaque le bloc Logs. Sans ce
+ * recoupement, elle concluait a la panne sur des etats que ses propres blocs Verrous
+ * et Taches declaraient normaux dans la meme sortie : un run en cours n'a pas encore
+ * ecrit sa ligne de fin, et une tache jamais declenchee n'a pas encore de log.
+ */
+interface ContexteLogs {
+  enCours: Map<CommandeSurveillee, RunEnCours>
+  /** Taches enregistrees qui ne se sont encore jamais declenchees : etat d'attente. */
+  enAttente: Set<CommandeSurveillee>
+}
+
+function construireContexteLogs(verrous: EtatVerrou[], taches: TacheInfo[] | null): ContexteLogs {
+  const enCours = new Map<CommandeSurveillee, RunEnCours>()
+  const enAttente = new Set<CommandeSurveillee>()
+
+  // Le verrou est la meilleure source : il date le debut du run.
+  for (const v of verrous) {
+    if (v.vivant) enCours.set(v.commande, { depuis: v.age, source: 'verrou' })
+  }
+
+  if (taches) {
+    for (const commande of COMMANDES_SURVEILLEES) {
+      const tache = taches.find((t) => t.nom === NOM_TACHE[commande])
+      if (!tache) continue
+      if (tacheEnCours(tache) && !enCours.has(commande)) {
+        enCours.set(commande, { depuis: null, source: 'planificateur' })
+      }
+      if (jamaisDeclenchee(tache)) enAttente.add(commande)
+    }
+  }
+
+  return { enCours, enAttente }
+}
+
+function blocLogs(d: DepsSante, maintenant: Date, ctx: ContexteLogs): Bloc {
   const lignes: Ligne[] = []
   const dossier = path.join(d.racine, 'logs')
 
@@ -785,13 +886,22 @@ function blocLogs(d: DepsSante, maintenant: Date): Bloc {
   for (const commande of COMMANDES_SURVEILLEES) {
     const fichier = `${commande}.log`
     const chemin = path.join(dossier, fichier)
+    const enCours = ctx.enCours.get(commande)
+    const enAttente = ctx.enAttente.has(commande)
 
     if (!presents.has(fichier)) {
+      // Une tache qui ne s'est jamais declenchee n'a rien pu ecrire : c'est une
+      // attente, pas une panne. Le bloc Taches affiche deja sa prochaine echeance.
       lignes.push(
-        ko(
-          `logs/${fichier} absent alors que d'autres logs existent - ${NOM_TACHE[commande]} n'a jamais rien ` +
-            `ecrit : verifier qu'elle est bien enregistree (schtasks /query /tn ${NOM_TACHE[commande]})`,
-        ),
+        enAttente
+          ? off(
+              `logs/${fichier} pas encore cree - ${NOM_TACHE[commande]} ne s'est jamais declenchee pour ` +
+                `l'instant, son log apparaitra a son premier run`,
+            )
+          : ko(
+              `logs/${fichier} absent alors que d'autres logs existent - ${NOM_TACHE[commande]} n'a jamais rien ` +
+                `ecrit : verifier qu'elle est bien enregistree (schtasks /query /tn ${NOM_TACHE[commande]})`,
+            ),
       )
       continue
     }
@@ -799,7 +909,10 @@ function blocLogs(d: DepsSante, maintenant: Date): Bloc {
     const age = maintenant.getTime() - statSync(chemin).mtime.getTime()
     const cadence = CADENCE_MS[commande]
 
-    if (age > cadence * TOLERANCE_LOG) {
+    // La fraicheur reste le signal le plus utile - c'est lui qui revele une tache qui
+    // a cesse de se declencher - mais elle ne veut rien dire tant que la tache n'a pas
+    // eu son premier declenchement : le log date alors d'un lancement manuel.
+    if (!enAttente && age > cadence * TOLERANCE_LOG) {
       lignes.push(
         ko(
           `logs/${fichier} fige depuis ${formaterAge(age)} alors que ce job tourne toutes les ` +
@@ -812,6 +925,21 @@ function blocLogs(d: DepsSante, maintenant: Date): Bloc {
 
     const fin = dernierRunTermine(lireQueue(chemin))
     if (fin === null) {
+      // Pas de ligne de fin parce que le run n'est pas fini : le verrou ou le
+      // Planificateur le disent en cours dans cette meme sortie.
+      if (enCours) {
+        const depuis =
+          enCours.depuis === null
+            ? `(${NOM_TACHE[commande]} en cours d'execution dans le Planificateur)`
+            : `depuis ${formaterAge(enCours.depuis)} (verrou ${commande}.lock)`
+        lignes.push(
+          ok(
+            `logs/${fichier} ecrit il y a ${formaterAge(age)} - run "${commande}" en cours ${depuis} : ` +
+              `sa ligne de fin s'ecrira a la fin du run`,
+          ),
+        )
+        continue
+      }
       lignes.push(
         ko(
           `logs/${fichier} ecrit il y a ${formaterAge(age)} mais sans aucune fin de run dans sa fin de ` +
@@ -860,15 +988,21 @@ export async function executerSante(d: DepsSante): Promise<ResultatSante> {
     d.notif && optsTelegram ? d.envoyerTest(optsTelegram) : Promise.resolve(null),
   ])
 
+  // Verrous et taches sont lus une seule fois : les blocs Verrous, Taches et Logs
+  // doivent raconter le meme etat, ils partent donc des memes donnees.
+  const verrous = lireVerrous(d, maintenant)
+  const taches = csvTaches === null ? null : analyserTachesCsv(csvTaches)
+  const contexteLogs = construireContexteLogs(verrous, taches)
+
   const blocs: Bloc[] = [
     blocConfig,
     blocSheet(sheet, cfg, maintenant),
     blocTelegram(telegram, d.notif, notifEnvoyee, cfg),
     blocOpenrouter(openrouter, cfg),
     blocDb(d, maintenant),
-    blocVerrou(d, maintenant),
-    blocTaches(csvTaches, plateforme),
-    blocLogs(d, maintenant),
+    blocVerrou(verrous),
+    blocTaches(taches, plateforme),
+    blocLogs(d, maintenant, contexteLogs),
   ]
 
   return { blocs, rapport: formaterRapport(blocs, maintenant), ok: !aUnProbleme(blocs) }
