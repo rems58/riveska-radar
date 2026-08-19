@@ -1,4 +1,5 @@
 import type { RadarDb } from '../db.ts'
+import { MAX_ECHECS_TECHNIQUES } from '../db.ts'
 import { recupererTexte } from '../collectors/http.ts'
 import { extraireBlocsItem, extraireBalise } from '../collectors/rss.ts'
 import { normaliser } from '../filter/keywords.ts'
@@ -59,15 +60,30 @@ export async function executerTriggers(d: DepsTriggers): Promise<ResultatTrigger
       const rupture = MOTS_RUPTURE.some((mot) => texteNormalise.includes(normaliser(mot)))
       if (!rupture) continue
 
-      d.db.marquerVu({ id, auteur: 'plateforme', url: lien, score: 100 })
+      // Contrairement a radar.ts, il n'y a pas de Sheet en secours ici : Telegram EST
+      // le livrable. Marquer "vu" avant de savoir si la notif a reussi perdrait l'alerte
+      // pour de bon (le flux RSS ne represente jamais le meme lien). On ne marque donc
+      // vu qu'apres un envoi reussi ; un echec est compte comme un echec technique
+      // ordinaire (meme compteur/plafond que radar.ts) pour permettre une nouvelle
+      // tentative au run suivant, tout en bornant les essais si Telegram reste en panne.
       const notifie = await d.notifier(`Annonce plateforme : ${titre}\n${lien}`)
       if (!notifie) {
-        // Ici, contrairement a radar.ts, il n'y a pas de Sheet en secours : l'annonce
-        // n'est notifiee que par Telegram. On la compte quand meme comme "vue" (pas de
-        // nouvelle tentative), le RSS ne la renverra plus - seul le log garde la trace.
         notificationsEchouees++
-        console.warn(`[radar] triggers : notification Telegram echouee pour l'annonce ${lien}`)
+        const echecs = d.db.enregistrerEchec({ id, auteur: 'plateforme', url: lien })
+        if (echecs >= MAX_ECHECS_TECHNIQUES) {
+          console.warn(
+            `[radar] triggers : annonce ${lien} abandonnee apres ${echecs} echecs de notification`,
+          )
+        } else {
+          console.warn(
+            `[radar] triggers : notification Telegram echouee pour l'annonce ${lien} ` +
+              `(tentative ${echecs}/${MAX_ECHECS_TECHNIQUES}, sera retentee au prochain run)`,
+          )
+        }
+        continue
       }
+
+      d.db.marquerVu({ id, auteur: 'plateforme', url: lien, score: 100 })
       nouvelles++
     }
   }

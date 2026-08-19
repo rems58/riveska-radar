@@ -12,13 +12,36 @@ const xmlAvecItem = `<?xml version="1.0"?><rss><channel>
   </item>
 </channel></rss>`
 
+const CHANNEL_VIDE = '<?xml version="1.0"?><rss><channel></channel></rss>'
+
+/**
+ * Un objet Response ne peut etre lu (.text()) qu'une seule fois : le reutiliser tel
+ * quel via mockResolvedValue casse tout test qui appelle executerTriggers plusieurs
+ * fois. Une Response fraiche est donc fabriquee a chaque appel fetch().
+ *
+ * De plus, FLUX_PLATEFORMES contient 3 URLs (2 Apple, 1 Google) : renvoyer le meme
+ * xml contenant l'item pour les 3 le ferait traiter 3 fois DANS LE MEME RUN (comme
+ * 3 flux distincts annoncant la meme chose), faussant les compteurs. On ne sert le
+ * xml fourni que sur le flux Android (celui dont l'URL correspond au lien de l'item
+ * de test), et un channel vide sur les autres - comme en realite, chaque flux a son
+ * propre contenu.
+ */
+function stubFetchAvec(xml: string) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(new Response(url.includes('android') ? xml : CHANNEL_VIDE, { status: 200 })),
+    ),
+  )
+}
+
 describe('executerTriggers', () => {
   it('surveille au moins un flux Apple et un flux Google', () => {
     expect(FLUX_PLATEFORMES.length).toBeGreaterThanOrEqual(2)
   })
 
   it('notifie une annonce contenant un mot-cle de rupture', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(xmlAvecItem, { status: 200 })))
+    stubFetchAvec(xmlAvecItem)
     const db = ouvrirDb(':memory:')
     const notifier = vi.fn(async (_texte: string) => true)
     const r = await executerTriggers({ db, notifier })
@@ -28,7 +51,7 @@ describe('executerTriggers', () => {
   })
 
   it('ne renotifie pas une annonce deja vue', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(xmlAvecItem, { status: 200 })))
+    stubFetchAvec(xmlAvecItem)
     const db = ouvrirDb(':memory:')
     await executerTriggers({ db, notifier: async () => true })
     const notifier = vi.fn(async () => true)
@@ -52,15 +75,67 @@ describe('executerTriggers', () => {
   })
 
   it('journalise et compte un echec de notification', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(xmlAvecItem, { status: 200 })))
+    stubFetchAvec(xmlAvecItem)
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const db = ouvrirDb(':memory:')
     const notifier = vi.fn(async (_texte: string) => false)
     const r = await executerTriggers({ db, notifier })
-    expect(r.nouvelles).toBeGreaterThan(0)
+    // Notification ratee : l'annonce n'est pas comptee comme delivree.
+    expect(r.nouvelles).toBe(0)
     expect(r.notificationsEchouees).toBe(1)
     const log = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.toLowerCase().includes('notification'))
     expect(log).toBeDefined()
+  })
+
+  it('ne marque pas une annonce vue si la notification echoue - renotifiee au run suivant', async () => {
+    stubFetchAvec(xmlAvecItem)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const db = ouvrirDb(':memory:')
+    const id = 'trigger:https://developer.android.com/news/1'
+
+    const echoue = vi.fn(async (_texte: string) => false)
+    const r1 = await executerTriggers({ db, notifier: echoue })
+    expect(r1.nouvelles).toBe(0)
+    expect(db.dejaVu(id)).toBe(false)
+
+    // Run suivant : le flux RSS represente encore le meme item (il reste dans le flux
+    // plusieurs jours), Telegram fonctionne cette fois -> l'annonce est enfin livree.
+    const reussit = vi.fn(async (_texte: string) => true)
+    const r2 = await executerTriggers({ db, notifier: reussit })
+    expect(r2.nouvelles).toBe(1)
+    expect(db.dejaVu(id)).toBe(true)
+    expect(reussit).toHaveBeenCalledTimes(1)
+  })
+
+  it('marque l annonce vue des que la notification reussit - pas de doublon au run suivant', async () => {
+    stubFetchAvec(xmlAvecItem)
+    const db = ouvrirDb(':memory:')
+    const notifier1 = vi.fn(async (_texte: string) => true)
+    const r1 = await executerTriggers({ db, notifier: notifier1 })
+    expect(r1.nouvelles).toBe(1)
+
+    const notifier2 = vi.fn(async (_texte: string) => true)
+    const r2 = await executerTriggers({ db, notifier: notifier2 })
+    expect(r2.nouvelles).toBe(0)
+    expect(notifier2).not.toHaveBeenCalled()
+  })
+
+  it('abandonne une annonce apres des echecs de notification repetes (plafond coherent avec radar.ts)', async () => {
+    stubFetchAvec(xmlAvecItem)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const db = ouvrirDb(':memory:')
+    const id = 'trigger:https://developer.android.com/news/1'
+    const notifier = vi.fn(async (_texte: string) => false)
+
+    await executerTriggers({ db, notifier })
+    await executerTriggers({ db, notifier })
+    await executerTriggers({ db, notifier })
+    expect(db.dejaVu(id)).toBe(true)
+    expect(notifier).toHaveBeenCalledTimes(3)
+
+    // 4e run : l'annonce est deja "vue" (abandonnee), plus de nouvelle tentative.
+    await executerTriggers({ db, notifier })
+    expect(notifier).toHaveBeenCalledTimes(3)
   })
 
   it('ignore un item sans lien exploitable', async () => {
