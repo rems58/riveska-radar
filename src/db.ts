@@ -46,6 +46,7 @@ export function ouvrirDb(chemin: string): RadarDb {
     );
     CREATE INDEX IF NOT EXISTS idx_posts_auteur ON posts_vus(auteur);
     CREATE INDEX IF NOT EXISTS idx_posts_recheck ON posts_vus(recheck_le, recheck_fait);
+    CREATE INDEX IF NOT EXISTS idx_posts_vu_le ON posts_vus(vu_le);
   `)
 
   return {
@@ -55,17 +56,29 @@ export function ouvrirDb(chemin: string): RadarDb {
     },
 
     marquerVu(e) {
+      // Si recheckLe n'est pas fourni, on doit preserver l'etat de re-check existant
+      // (recheck_le et recheck_fait) plutot que de l'ecraser silencieusement : sinon,
+      // remarquer un post deja re-verifie annulerait son re-check.
+      const recheckFourni = e.recheckLe !== undefined
       db.prepare(
-        `INSERT OR REPLACE INTO posts_vus (id, auteur, url, score, vu_le, recheck_le, recheck_fait)
-         VALUES (?, ?, ?, ?, ?, ?, 0)`,
-      ).run(
-        e.id,
-        e.auteur,
-        e.url,
-        e.score,
-        (e.vuLe ?? new Date()).getTime(),
-        e.recheckLe ? e.recheckLe.getTime() : null,
-      )
+        `INSERT INTO posts_vus (id, auteur, url, score, vu_le, recheck_le, recheck_fait)
+         VALUES (@id, @auteur, @url, @score, @vuLe, @recheckLe, 0)
+         ON CONFLICT(id) DO UPDATE SET
+           auteur = excluded.auteur,
+           url = excluded.url,
+           score = excluded.score,
+           vu_le = excluded.vu_le,
+           recheck_le = CASE WHEN @recheckFourni = 1 THEN excluded.recheck_le ELSE posts_vus.recheck_le END,
+           recheck_fait = CASE WHEN @recheckFourni = 1 THEN 0 ELSE posts_vus.recheck_fait END`,
+      ).run({
+        id: e.id,
+        auteur: e.auteur,
+        url: e.url,
+        score: e.score,
+        vuLe: (e.vuLe ?? new Date()).getTime(),
+        recheckLe: e.recheckLe ? e.recheckLe.getTime() : null,
+        recheckFourni: recheckFourni ? 1 : 0,
+      })
     },
 
     compterApparitions(auteur) {

@@ -55,4 +55,27 @@ describe('RadarDb', () => {
     const depuis = new Date(Date.now() - 3600 * 1000)
     expect(db.compterDepuis(depuis)).toBe(2)
   })
+
+  it('ne reannule pas un re-check deja fait quand on remarque le post sans recheckLe', () => {
+    const passe = new Date(Date.now() - 1000)
+    db.marquerVu({ id: 'reddit:a', auteur: 'bob', url: 'https://r/1', score: 70, recheckLe: passe })
+    db.marquerRecheckFait('reddit:a')
+    db.marquerVu({ id: 'reddit:a', auteur: 'bob', url: 'https://r/1', score: 75 })
+    expect(db.aRecheck()).toHaveLength(0)
+  })
+
+  it('ne perd pas l echeance de re-check quand on remarque le post sans recheckLe', () => {
+    const passe = new Date(Date.now() - 1000)
+    db.marquerVu({ id: 'reddit:a', auteur: 'bob', url: 'https://r/1', score: 70, recheckLe: passe })
+    db.marquerVu({ id: 'reddit:a', auteur: 'bob', url: 'https://r/1', score: 75 })
+    expect(db.aRecheck().map((p) => p.id)).toEqual(['reddit:a'])
+  })
+
+  it('un nouveau recheckLe explicite ecrase bien l ancien', () => {
+    const passe = new Date(Date.now() - 1000)
+    const futur = new Date(Date.now() + 60_000)
+    db.marquerVu({ id: 'reddit:a', auteur: 'bob', url: 'https://r/1', score: 70, recheckLe: passe })
+    db.marquerVu({ id: 'reddit:a', auteur: 'bob', url: 'https://r/1', score: 75, recheckLe: futur })
+    expect(db.aRecheck()).toHaveLength(0)
+  })
 })
