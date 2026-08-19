@@ -1,5 +1,20 @@
 import { z } from 'zod'
 
+/**
+ * Coercition numerique tolerante : une valeur absente ou une chaine vide/blanche
+ * doit tomber sur la valeur par defaut, pas etre coercee en 0. z.coerce.number()
+ * seul convertit '' en 0. Le .default() doit etre sur le schema INTERIEUR
+ * (apres le preprocess) pour s'appliquer une fois '' transformee en undefined :
+ * un .default() pose sur le wrapper exterieur ne verrait jamais cet undefined,
+ * puisque le preprocess tourne avant lui sur la valeur brute ''.
+ */
+function nombreOptionnel(valeurDefaut: number) {
+  return z.preprocess((valeur) => {
+    if (typeof valeur === 'string' && valeur.trim() === '') return undefined
+    return valeur
+  }, z.coerce.number().default(valeurDefaut))
+}
+
 const schema = z.object({
   REDDIT_CLIENT_ID: z.string().min(1),
   REDDIT_CLIENT_SECRET: z.string().min(1),
@@ -12,9 +27,9 @@ const schema = z.object({
   SHEET_TAB: z.string().default('Prospects'),
   OPENROUTER_API_KEY: z.string().min(1),
   OPENROUTER_MODEL: z.string().default('google/gemini-3.5-flash'),
-  SCORE_THRESHOLD: z.coerce.number().default(60),
-  MAX_POST_AGE_DAYS: z.coerce.number().default(30),
-  RETENTION_DAYS: z.coerce.number().default(90),
+  SCORE_THRESHOLD: nombreOptionnel(60),
+  MAX_POST_AGE_DAYS: nombreOptionnel(30),
+  RETENTION_DAYS: nombreOptionnel(90),
 })
 
 export interface Config {
@@ -60,4 +75,9 @@ let cache: Config | null = null
 export function getConfig(): Config {
   if (!cache) cache = parseConfig(process.env)
   return cache
+}
+
+/** Vide le cache de getConfig(). Utile pour les tests qui modifient process.env. */
+export function resetConfig(): void {
+  cache = null
 }
