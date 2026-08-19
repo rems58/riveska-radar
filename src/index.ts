@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { getConfig } from './config.ts'
-import { ouvrirDb } from './db.ts'
+import { ouvrirDb, statistiquesDb } from './db.ts'
 import type { RadarDb } from './db.ts'
 import { collecterTout, collecteursParDefaut, avertirSourceVide } from './collectors/index.ts'
 import { noterPost } from './enrich/score.ts'
@@ -16,6 +16,8 @@ import { executerReddit } from './jobs/reddit.ts'
 import { executerRecheck } from './jobs/recheck.ts'
 import { executerTriggers } from './jobs/triggers.ts'
 import { executerWeekly } from './jobs/weekly.ts'
+import { executerSante } from './jobs/sante.ts'
+import { sonderSheet, sonderTelegram, sonderOpenrouter, lireTachesPlanifiees } from './jobs/sante-sondes.ts'
 import { compterReponses } from './jobs/recheck-compteurs.ts'
 import { collecterRedditRss } from './collectors/reddit-rss.ts'
 import { acquerirVerrou, libererVerrou, rafraichirVerrou } from './verrou.ts'
@@ -194,8 +196,37 @@ async function commandeWeekly(): Promise<void> {
   console.log('[radar] commande "weekly" terminee :', resultat, '| sources vides:', sourcesVides)
 }
 
+/** Texte du message de test envoye uniquement sur `sante --notif`. */
+const MESSAGE_TEST_TELEGRAM =
+  'Riveska Radar - message de test de la commande "sante". Aucune action requise, ' +
+  'ce message ne signale aucun prospect.'
+
 /**
- * Les cinq jobs, exposes par nom pour le CLI et pour les tests.
+ * Verification de sante : lit tout, n'ecrit rien (ni Sheet, ni base, ni verrou) et
+ * n'envoie aucun message Telegram sauf --notif. Se lance a la main, jamais par le
+ * Planificateur. Code de sortie 1 des qu'un vrai probleme est detecte, pour pouvoir
+ * la brancher plus tard sur une alerte.
+ */
+async function commandeSante(): Promise<void> {
+  const resultat = await executerSante({
+    racine: RACINE,
+    cheminDb: CHEMIN_DB,
+    env: process.env,
+    notif: process.argv.includes('--notif'),
+    verifierSheet: sonderSheet,
+    verifierTelegram: sonderTelegram,
+    envoyerTest: (o) => envoyerTelegram(MESSAGE_TEST_TELEGRAM, o),
+    verifierOpenrouter: sonderOpenrouter,
+    statsDb: statistiquesDb,
+    lireTaches: lireTachesPlanifiees,
+  })
+
+  console.log(resultat.rapport)
+  if (!resultat.ok) process.exitCode = 1
+}
+
+/**
+ * Les six commandes, exposees par nom pour le CLI et pour les tests.
  * Construire cet objet n'appelle getConfig() nulle part : chaque commande ne lit
  * la config qu'a son execution reelle, pour qu'un simple import du module (les
  * tests) ne leve jamais en l'absence de .env.
@@ -206,10 +237,30 @@ export const COMMANDES: Record<string, () => Promise<void>> = {
   recheck: commandeRecheck,
   triggers: commandeTriggers,
   weekly: commandeWeekly,
+  sante: commandeSante,
 }
+
+/**
+ * Commandes qui ne posent AUCUN verrou. "sante" ne fait que lire, et doit
+ * justement pouvoir tourner PENDANT un run pour en rendre compte : lui donner un
+ * verrou l'empecherait de repondre exactement au moment ou elle est la plus utile,
+ * et poserait un fichier alors qu'elle a promis de ne rien modifier.
+ */
+const SANS_VERROU = new Set(['sante'])
 
 function cheminVerrou(commande: string): string {
   return path.join(RACINE, `${commande}.lock`)
+}
+
+/** Execute une commande en transformant toute exception en code de sortie 1 journalise. */
+async function executerCommande(commande: string, executer: () => Promise<void>): Promise<void> {
+  try {
+    await executer()
+  } catch (err) {
+    const raison = err instanceof Error ? (err.stack ?? err.message) : String(err)
+    console.error(`[radar] commande "${commande}" a echoue : ${raison}`)
+    process.exitCode = 1
+  }
 }
 
 async function main(): Promise<void> {
@@ -226,6 +277,11 @@ async function main(): Promise<void> {
   }
 
   chargerEnv()
+
+  if (SANS_VERROU.has(commande)) {
+    await executerCommande(commande, executer)
+    return
+  }
 
   // Le Planificateur relance radar toutes les 15 minutes sans verifier si le run
   // precedent est termine. Un chevauchement ferait scorer/facturer deux fois les
@@ -246,11 +302,7 @@ async function main(): Promise<void> {
   ).unref()
 
   try {
-    await executer()
-  } catch (err) {
-    const raison = err instanceof Error ? (err.stack ?? err.message) : String(err)
-    console.error(`[radar] commande "${commande}" a echoue : ${raison}`)
-    process.exitCode = 1
+    await executerCommande(commande, executer)
   } finally {
     clearInterval(rafraichissement)
     libererVerrou(verrou)

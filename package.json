@@ -9,6 +9,7 @@
     "recheck": "node src/index.ts recheck",
     "triggers": "node src/index.ts triggers",
     "weekly": "node src/index.ts weekly",
+    "sante": "node src/index.ts sante",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
