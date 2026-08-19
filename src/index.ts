@@ -4,7 +4,6 @@ import { getConfig } from './config.ts'
 import { ouvrirDb } from './db.ts'
 import type { RadarDb } from './db.ts'
 import { collecterTout, collecteursParDefaut } from './collectors/index.ts'
-import { recupererJson } from './collectors/http.ts'
 import { noterPost } from './enrich/score.ts'
 import { enrichirPost } from './enrich/draft.ts'
 import { assurerEnTetes, ajouterLignes } from './sinks/sheets.ts'
@@ -16,6 +15,7 @@ import { executerRadar } from './jobs/radar.ts'
 import { executerRecheck } from './jobs/recheck.ts'
 import { executerTriggers } from './jobs/triggers.ts'
 import { executerWeekly } from './jobs/weekly.ts'
+import { compterReponses } from './jobs/recheck-compteurs.ts'
 import { acquerirVerrou, libererVerrou } from './verrou.ts'
 
 // La base, le .env et les verrous vivent a cote du projet (src/.. = racine de
@@ -78,35 +78,6 @@ function notifierTelegram(texte: string): Promise<boolean> {
   return envoyerTelegram(texte, optionsTelegram())
 }
 
-interface ReponseListing {
-  data?: { children?: unknown }
-}
-
-/**
- * Compte les reponses (commentaires) d'un post via l'endpoint JSON public de Reddit.
- * Les prospects viennent aussi de HN, Stack Overflow, Bluesky, Mastodon et de forums RSS :
- * seules les URL Reddit sont geree ici, tout le reste renvoie -1 (inconnu, pas une erreur).
- * Ne leve jamais : recupererJson (couche http commune) ne leve jamais non plus.
- */
-async function compterReponses(url: string): Promise<number> {
-  if (!/^https:\/\/(www\.)?reddit\.com\//.test(url)) {
-    console.warn(`[radar] recheck : url non-Reddit, comptage de reponses non gere (${url})`)
-    return -1
-  }
-
-  const cfg = getConfig()
-  const donnees = await recupererJson<unknown>({
-    source: 'recheck-reddit',
-    url: `${url}.json`,
-    init: { headers: { 'User-Agent': cfg.redditUserAgent } },
-  })
-
-  if (!Array.isArray(donnees) || donnees.length < 2) return -1
-  const commentaires = (donnees[1] as ReponseListing | undefined)?.data?.children
-  if (!Array.isArray(commentaires)) return -1
-  return commentaires.length
-}
-
 async function commandeRadar(): Promise<void> {
   const cfg = getConfig()
   const opts = optionsSheets()
@@ -129,9 +100,10 @@ async function commandeRadar(): Promise<void> {
 }
 
 async function commandeRecheck(): Promise<void> {
+  const cfg = getConfig()
   const resultat = await executerRecheck({
     db: db(),
-    compterReponses,
+    compterReponses: (url) => compterReponses(url, { redditUserAgent: cfg.redditUserAgent }),
     notifier: notifierTelegram,
   })
 
