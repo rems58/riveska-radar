@@ -157,11 +157,11 @@ describe('collecterRedditRss - sequentiel strict et debit (contrainte Reddit mes
     await promesse
   })
 
-  it('retente une fois apres un 429, avec un delai plus long, puis abandonne proprement cette requete', async () => {
+  it('retente une fois apres un 429, avec un delai plus long ; succes au retry -> pas d arret', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response('rate limited', { status: 429 }))
-      .mockResolvedValueOnce(new Response('rate limited', { status: 429 }))
+      .mockResolvedValueOnce(new Response(feed([entreePost('abc', 'App rejected')]), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
@@ -174,14 +174,60 @@ describe('collecterRedditRss - sequentiel strict et debit (contrainte Reddit mes
     expect(fetchMock).toHaveBeenCalledTimes(2)
 
     const posts = await promesse
-    expect(posts).toEqual([]) // abandonne proprement : pas d exception, resultat vide pour cette requete
+    expect(posts).toHaveLength(1) // le retry a reussi : une limitation isolee ne bloque pas la collecte
     expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('429'))).toBe(true)
   })
 
-  it('un 429 suivi d un succes au retry recupere les posts normalement', async () => {
+  it('une requete dont le retry echoue AUSSI (2 reponses limitees consecutives) arrete tout le run', async () => {
+    // Deux 429 consecutifs (tentative initiale + retry) sur LA MEME requete signalent
+    // une IP en penalite, pas un incident isole : enchainer les requetes restantes
+    // prolongerait la penalite au lieu de la laisser retomber (mesure reelle : la
+    // meme URL a echoue en 429 en curl ET en fetch Node, une heure apres un succes).
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response('rate limited', { status: 429 }))
+      .mockResolvedValueOnce(new Response('rate limited', { status: 429 })) // q1, 1ere tentative
+      .mockResolvedValueOnce(new Response('rate limited', { status: 429 })) // q1, retry -> toujours limite
+      .mockResolvedValue(new Response(feed([entreePost('xyz', 'q2 post')]), { status: 200 })) // q2 : jamais tentee
+    vi.stubGlobal('fetch', fetchMock)
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const promesse = collecterRedditRss(['q1', 'q2', 'q3'])
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(DELAI_RETRY_APRES_429_MS)
+
+    const posts = await promesse
+    expect(posts).toEqual([]) // arret avant meme d avoir pu recolter quoi que ce soit
+    expect(fetchMock).toHaveBeenCalledTimes(2) // q2 et q3 jamais tentees : pas de 3e/4e appel
+
+    const log = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('limitation'))
+    expect(log).toBeDefined()
+    expect(log).toContain('2 requete(s) restante(s)')
+  })
+
+  it('un 403 (blocage escalade) declenche EXACTEMENT le meme comportement qu un 429', async () => {
+    // Mesure reelle : le 403 est la forme escaladee de la meme limite Reddit, pas
+    // une erreur distincte - meme retry, meme arret anticipe si il persiste.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('forbidden', { status: 403 }))
+      .mockResolvedValueOnce(new Response('forbidden', { status: 403 }))
+      .mockResolvedValue(new Response(feed([entreePost('xyz', 'q2')]), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const promesse = collecterRedditRss(['q1', 'q2'])
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(DELAI_RETRY_APRES_429_MS)
+
+    const posts = await promesse
+    expect(posts).toEqual([])
+    expect(fetchMock).toHaveBeenCalledTimes(2) // q2 jamais tentee, meme raisonnement que pour 429
+  })
+
+  it('un 403 isole (retry reussi) ne declenche pas d arret', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('forbidden', { status: 403 }))
       .mockResolvedValueOnce(new Response(feed([entreePost('abc', 'App rejected')]), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
     vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -193,26 +239,7 @@ describe('collecterRedditRss - sequentiel strict et debit (contrainte Reddit mes
     expect(posts).toHaveLength(1)
   })
 
-  it('une requete abandonnee apres 429 n empeche pas la requete suivante de reussir', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response('rate limited', { status: 429 })) // q1, 1ere tentative
-      .mockResolvedValueOnce(new Response('rate limited', { status: 429 })) // q1, retry -> abandon
-      .mockResolvedValueOnce(new Response(feed([entreePost('xyz', 'q2 post')]), { status: 200 })) // q2
-    vi.stubGlobal('fetch', fetchMock)
-    vi.spyOn(console, 'warn').mockImplementation(() => {})
-
-    const promesse = collecterRedditRss(['q1', 'q2'])
-    await vi.advanceTimersByTimeAsync(0)
-    await vi.advanceTimersByTimeAsync(DELAI_RETRY_APRES_429_MS)
-    await vi.advanceTimersByTimeAsync(DELAI_ENTRE_REQUETES_MS)
-
-    const posts = await promesse
-    expect(posts).toHaveLength(1)
-    expect(posts[0]!.id).toBe('reddit:xyz')
-  })
-
-  it('une panne reseau (pas un 429) n est jamais retentee immediatement', async () => {
+  it('une panne reseau (pas un 429/403) n est jamais retentee immediatement', async () => {
     const fetchMock = vi
       .fn()
       .mockRejectedValueOnce(new Error('DNS injoignable'))

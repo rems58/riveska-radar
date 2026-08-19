@@ -23,6 +23,16 @@ import { extraireBlocsItem, extraireBalise, extraireLien } from './rss.ts'
  * par minute maximum, en SEQUENTIEL STRICT - jamais de parallelisme sur cette source.
  * C'est pourquoi ce collecteur n'est jamais appele par collecterTout (parallele) mais
  * par sa propre commande, planifiee une fois par heure (jobs/reddit.ts, "reddit").
+ *
+ * Mesure complementaire (meme jour, quelques heures plus tard) : la MEME url, avec
+ * le meme user-agent, a echoue en 429 aussi bien en curl qu'en fetch Node - alors
+ * qu'elle avait repondu 200 avec 25 entrees une heure plus tot. Ce n'est donc pas un
+ * defaut de ce code : Reddit limite par IP et ESCALADE (429 puis 403, blocage
+ * temporaire) si l'IP insiste. Consequence : une reponse limitee (429 OU 403) qui
+ * persiste apres le retry declenche un ARRET IMMEDIAT de tout le run (voir
+ * collecterRedditRss) - enchainer les requetes restantes prolongerait la penalite
+ * au lieu de la laisser retomber. Le 403 recoit exactement le meme traitement que
+ * le 429 : c'est la forme escaladee de la meme limite, pas une erreur distincte.
  */
 
 /** Delai minimum entre deux requetes search.rss. Voir mesure ci-dessus : 1/minute. */
@@ -70,31 +80,60 @@ function construireUrl(requete: string): string {
 }
 
 /**
- * Recupere une page search.rss, avec UNE tentative de retry si (et seulement si)
- * la premiere reponse est un 429 - un rate-limit merite une seconde chance apres un
- * delai plus long, contrairement a une panne reseau ou un 404 qui n'ont aucune
- * raison de se resoudre en reessayant tout de suite. Abandonne proprement cette
- * requete (renvoie null) sans jamais faire echouer les autres.
+ * 429 (rate-limit) et 403 (blocage temporaire) sont la MEME limite Reddit, juste a
+ * deux degres d'escalade differents (mesure reelle : meme URL, meme user-agent -
+ * 429 en curl comme en fetch une heure apres un 200 - donc une limitation par IP,
+ * pas un defaut de ce code). Les deux declenchent le meme recul.
  */
-async function recupererAvecRetrySur429(requete: string): Promise<string | null> {
+function estLimite(statut: number | null): boolean {
+  return statut === 429 || statut === 403
+}
+
+interface ResultatRequete {
+  xml: string | null
+  /**
+   * true si la reponse - APRES le retry - est encore un 429/403. Le champ compte
+   * a lui seul "deux reponses de limitation consecutives" (la tentative initiale
+   * ET le retry) : voir collecterRedditRss, qui arrete tout le run des que ce champ
+   * vaut true, sans tenter les requetes suivantes.
+   */
+  limite: boolean
+}
+
+/**
+ * Recupere une page search.rss, avec UNE tentative de retry si (et seulement si)
+ * la premiere reponse est limitee (429 ou 403) - une limitation isolee merite une
+ * seconde chance apres un delai plus long, contrairement a une panne reseau ou un
+ * 404 qui n'ont aucune raison de se resoudre en reessayant tout de suite.
+ *
+ * Si le retry est ENCORE limite, resultat.limite vaut true : deux reponses de
+ * limitation consecutives sur la meme requete signalent une IP en penalite, pas
+ * un incident isole - insister (essayer les requetes suivantes) ne ferait que
+ * prolonger la penalite. C'est a l'appelant (collecterRedditRss) d'arreter tout
+ * le run dans ce cas, pas a cette fonction de continuer seule.
+ */
+async function recupererAvecRetry(requete: string): Promise<ResultatRequete> {
   const url = construireUrl(requete)
   const options = { source: 'reddit-rss', url, init: { headers: { 'User-Agent': USER_AGENT } } }
 
   const premiere = await recupererTexteAvecStatut(options)
-  if (premiere.texte !== null) return premiere.texte
-  if (premiere.statut !== 429) return null
+  if (premiere.texte !== null) return { xml: premiere.texte, limite: false }
+  if (!estLimite(premiere.statut)) return { xml: null, limite: false }
 
   console.warn(
-    `[radar] reddit-rss : 429 pour la requete "${requete}", nouvelle tentative dans ` +
+    `[radar] reddit-rss : ${premiere.statut} pour la requete "${requete}", nouvelle tentative dans ` +
       `${DELAI_RETRY_APRES_429_MS / 1000}s`,
   )
   await pause(DELAI_RETRY_APRES_429_MS)
 
   const deuxieme = await recupererTexteAvecStatut(options)
-  if (deuxieme.texte === null) {
-    console.warn(`[radar] reddit-rss : requete "${requete}" abandonnee apres un nouveau 429`)
+  if (deuxieme.texte !== null) return { xml: deuxieme.texte, limite: false }
+
+  const toujoursLimite = estLimite(deuxieme.statut)
+  if (!toujoursLimite) {
+    console.warn(`[radar] reddit-rss : requete "${requete}" abandonnee (statut ${deuxieme.statut ?? 'reseau'})`)
   }
-  return deuxieme.texte
+  return { xml: null, limite: toujoursLimite }
 }
 
 /**
@@ -162,8 +201,14 @@ function posteDepuisEntree(bloc: string): RawPost | null {
  * contrairement aux autres collecteurs (collecterTout les lance en parallele).
  * requetes est parametrable (defaut : REQUETES) pour les tests et la mesure reelle
  * de l'espacement sans devoir attendre les 12 requetes completes.
- * Ne leve jamais : une requete en echec (y compris apres retry sur 429) est
- * simplement ignoree, les suivantes continuent normalement.
+ * Ne leve jamais.
+ *
+ * ARRET ANTICIPE sur limitation persistante : si une requete reste limitee (429
+ * ou 403) apres son retry, c'est le signal d'une IP en penalite, pas d'un incident
+ * isole sur cette seule requete. Le run s'arrete alors immediatement SANS tenter
+ * les requetes restantes - les enchainer prolongerait la penalite au lieu de la
+ * laisser retomber. Mieux vaut zero post ce cycle-ci ; le prochain run (dans
+ * l'heure) reessaiera depuis le debut.
  */
 export async function collecterRedditRss(requetes: string[] = REQUETES): Promise<RawPost[]> {
   const vus = new Set<string>()
@@ -172,10 +217,22 @@ export async function collecterRedditRss(requetes: string[] = REQUETES): Promise
   for (let i = 0; i < requetes.length; i++) {
     if (i > 0) await pause(DELAI_ENTRE_REQUETES_MS)
 
-    const xml = await recupererAvecRetrySur429(requetes[i]!)
-    if (xml === null) continue
+    const resultat = await recupererAvecRetry(requetes[i]!)
 
-    for (const bloc of extraireBlocsItem(xml)) {
+    if (resultat.limite) {
+      const restantes = requetes.length - i - 1
+      console.warn(
+        `[radar] reddit-rss : IP en limitation Reddit (429/403 persistant apres retry) - ` +
+          `arret immediat du run, ${restantes} requete(s) restante(s) non tentee(s) pour ne pas ` +
+          `prolonger la penalite. Le prochain run (planifie dans l'heure) reessaiera depuis le debut - ` +
+          `ne pas relancer cette commande a la main, ca ne ferait qu'entretenir le blocage.`,
+      )
+      break
+    }
+
+    if (resultat.xml === null) continue
+
+    for (const bloc of extraireBlocsItem(resultat.xml)) {
       const post = posteDepuisEntree(bloc)
       if (!post) continue
       if (vus.has(post.id)) continue
