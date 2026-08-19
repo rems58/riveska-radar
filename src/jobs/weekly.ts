@@ -23,7 +23,17 @@ const SEPT_JOURS_MS = 7 * 24 * 3600 * 1000
 
 export interface DepsWeekly {
   db: RadarDb
-  lireStatuts: () => Promise<string[]>
+  /**
+   * Renvoie les statuts des lignes du Sheet dont date_detect est posterieure a
+   * "depuis" (borne fournie par executerWeekly, filtrage a la charge de l'appelant
+   * reel - Task 18 - qui lit la colonne date_detect, premiere colonne, ISO 8601).
+   * Le filtrage cote appelant est essentiel : detectes et repondus/ignores/nouveaux
+   * doivent porter sur EXACTEMENT la meme population, sinon le taux de reponse
+   * compare deux ensembles differents et devient faux (cf. db.compterDepuis, qui
+   * compte aussi les rejets/echecs/entrees trigger: jamais ecrits au Sheet - a ne
+   * plus utiliser ici pour cette raison).
+   */
+  lireStatuts: (depuis: Date) => Promise<string[]>
   notifier: (texte: string) => Promise<boolean>
 }
 
@@ -35,10 +45,13 @@ function normaliserStatut(valeur: string): string {
   return normaliser(valeur).trim()
 }
 
-/** Bilan hebdomadaire : combien de prospects detectes, repondus, ignores, en attente. */
+/**
+ * Bilan hebdomadaire : combien de prospects detectes, repondus, ignores, en attente.
+ * detectes = nombre de statuts recus pour la fenetre, PAS un comptage independant :
+ * c'est ce qui garantit que le taux repondus/detectes compare la meme population.
+ */
 export async function executerWeekly(d: DepsWeekly): Promise<Stats> {
-  const detectes = d.db.compterDepuis(new Date(Date.now() - SEPT_JOURS_MS))
-  const statuts = await d.lireStatuts()
+  const statuts = await d.lireStatuts(new Date(Date.now() - SEPT_JOURS_MS))
 
   let repondus = 0
   let ignores = 0
@@ -51,7 +64,7 @@ export async function executerWeekly(d: DepsWeekly): Promise<Stats> {
     else if (v === 'nouveau') nouveaux++
   }
 
-  const stats: Stats = { detectes, repondus, ignores, nouveaux }
+  const stats: Stats = { detectes: statuts.length, repondus, ignores, nouveaux }
   await d.notifier(formaterStats(stats))
   return stats
 }

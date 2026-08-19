@@ -51,4 +51,32 @@ describe('executerWeekly', () => {
     expect(r.ignores).toBe(1)
     expect(r.nouveaux).toBe(1)
   })
+
+  it('le taux reflete la fenetre de 7 jours, pas l historique complet du Sheet', async () => {
+    const db = ouvrirDb(':memory:')
+    const notifier = vi.fn(async () => true)
+    // lireStatuts recoit la date de debut de fenetre et ne renvoie (comme le fera le
+    // vrai lecteur de Sheet, Task 18) que les lignes dont date_detect est dans la
+    // fenetre : 2 lignes recentes, pas les 10 lignes anciennes qui existent par ailleurs.
+    const lireStatuts = vi.fn(async (_depuis: Date) => ['repondu', 'repondu'])
+    const r = await executerWeekly({ db, lireStatuts, notifier })
+    expect(r.detectes).toBe(2)
+    expect(r.repondus).toBe(2)
+    expect(formaterStats(r)).toContain('100%')
+    expect(lireStatuts).toHaveBeenCalledWith(expect.any(Date))
+  })
+
+  it('n affiche pas un pourcentage errone : detectes et repondus viennent toujours de la meme liste de statuts', async () => {
+    const db = ouvrirDb(':memory:')
+    const notifier = vi.fn(async () => true)
+    const r = await executerWeekly({
+      db,
+      lireStatuts: async () => ['repondu', 'ignore', 'nouveau', 'repondu', 'ignore'],
+      notifier,
+    })
+    // detectes doit etre la taille de la liste renvoyee (population du Sheet dans la
+    // fenetre), jamais un comptage independant tire d'une autre source (ex: posts_vus,
+    // qui contient aussi les rejets et les entrees trigger: jamais ecrites au Sheet).
+    expect(r.detectes).toBe(5)
+  })
 })
