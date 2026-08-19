@@ -16,7 +16,7 @@ import { executerRecheck } from './jobs/recheck.ts'
 import { executerTriggers } from './jobs/triggers.ts'
 import { executerWeekly } from './jobs/weekly.ts'
 import { compterReponses } from './jobs/recheck-compteurs.ts'
-import { acquerirVerrou, libererVerrou } from './verrou.ts'
+import { acquerirVerrou, libererVerrou, rafraichirVerrou } from './verrou.ts'
 
 // La base, le .env et les verrous vivent a cote du projet (src/.. = racine de
 // riveska-radar/), pas dans un dossier temporaire ni relativement au repertoire
@@ -30,6 +30,11 @@ const CHEMIN_ENV = path.join(RACINE, '.env')
 // Tres large par rapport a la duree normale d'un run : ~40 appels Reddit sequentiels
 // + jusqu'a 2 appels LLM par candidat peuvent legitimement prendre plusieurs minutes.
 const DUREE_MAX_VERROU_MS = 20 * 60 * 1000
+
+// Nettement plus court que DUREE_MAX_VERROU_MS : un run legitime qui depasse 20 min
+// (LLM lent) ne doit jamais se faire evincer par un nouvel appelant tant qu'il
+// rafraichit periodiquement son verrou (voir verrou.ts, Fix 6).
+const INTERVALLE_RAFRAICHISSEMENT_VERROU_MS = 5 * 60 * 1000
 
 /**
  * Charge le fichier .env a la racine du projet dans process.env. Node ne le fait
@@ -194,6 +199,13 @@ async function main(): Promise<void> {
     return
   }
 
+  // .unref() : ce timer ne doit jamais, a lui seul, maintenir le process eveille -
+  // le clearInterval du finally est le chemin normal, ceci est un filet de securite.
+  const rafraichissement = setInterval(
+    () => rafraichirVerrou(verrou),
+    INTERVALLE_RAFRAICHISSEMENT_VERROU_MS,
+  ).unref()
+
   try {
     await executer()
   } catch (err) {
@@ -201,6 +213,7 @@ async function main(): Promise<void> {
     console.error(`[radar] commande "${commande}" a echoue : ${raison}`)
     process.exitCode = 1
   } finally {
+    clearInterval(rafraichissement)
     libererVerrou(verrou)
   }
 }
