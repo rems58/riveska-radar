@@ -179,13 +179,18 @@ npm run reddit    # Reddit via search.rss, sequentiel a 1 req/min - a part de ra
 npm run recheck   # relance 48h : signale les prospects toujours sans reponse
 npm run triggers  # surveille les annonces Apple/Google (nouvelles exigences)
 npm run weekly    # bilan hebdomadaire du taux de reponse
+npm run sante     # "est-ce que tout va bien ?" en quelques lignes - lecture seule
 npm test          # suite de tests (vitest)
 npm run typecheck # verification TypeScript stricte, sans emission
 ```
 
 Equivalent direct sans passer par npm : `node src/index.ts radar` (idem pour `reddit`,
-`recheck`, `triggers`, `weekly`). `reddit` prend jusqu'a une douzaine de minutes (debit
-impose par Reddit, voir plus haut) - c'est normal, ce n'est pas un blocage.
+`recheck`, `triggers`, `weekly`, `sante`). `reddit` prend jusqu'a une douzaine de minutes
+(debit impose par Reddit, voir plus haut) - c'est normal, ce n'est pas un blocage.
+
+`sante` est la seule commande qui ne se planifie pas : elle se lance a la main quand on
+veut savoir ou en est le radar (voir Depannage). Elle est aussi la seule a accepter un
+drapeau : `node src/index.ts sante --notif`.
 
 La base locale `radar.db` (SQLite) est creee automatiquement a la racine du projet au
 premier lancement - elle memorise les posts deja vus pour ne jamais les retraiter deux
@@ -364,6 +369,62 @@ Seul le LLM (OpenRouter) coute reellement : de l'ordre de **3 a 8 EUR par mois**
 volume de posts collectes et le modele choisi (`OPENROUTER_MODEL`).
 
 ## Depannage
+
+### D'abord : `node src/index.ts sante`
+
+Une panne silencieuse - Sheet devenu inaccessible, cle OpenRouter epuisee, tache qui ne
+se declenche plus - ne se voit autrement qu'en constatant l'absence de prospects,
+parfois plusieurs jours trop tard. Cette commande repond en quelques secondes a la seule
+question qui compte, et **dit quoi faire** quand quelque chose cloche.
+
+```bash
+node src/index.ts sante            # ou : npm run sante
+node src/index.ts sante --notif    # + un vrai message de test sur Telegram
+```
+
+Un marqueur par ligne : `OK` (rien a faire) · `!!` (probleme reel, la ligne dit quoi
+faire) · `--` (desactive ou non applicable - une information, pas un probleme). Le
+**code de sortie vaut 1 des qu'un `!!` apparait**, 0 sinon : de quoi la brancher plus
+tard sur une alerte automatique.
+
+Ce qu'elle regarde, un bloc par domaine :
+
+| Bloc | Ce qui est verifie |
+|---|---|
+| Configuration | le `.env` se charge et chaque variable obligatoire passe la meme validation qu'un vrai run ; les sources facultatives eteintes (Reddit OAuth, Bluesky) apparaissent en `--` |
+| Google Sheets | acces reel, onglet present, nombre de prospects, date du plus recent |
+| Telegram | le bot repond (`getMe`) - **aucun message n'est envoye** sans `--notif` |
+| OpenRouter | cle valide et credit restant : c'est le seul poste qui coute de l'argent, et une cle epuisee arrete le scoring **sans** arreter la collecte |
+| Base locale | `radar.db` lisible, posts vus, dernier ajout, echecs en attente de retry, abandons definitifs des 7 derniers jours |
+| Verrous | un verrou present est normal pendant un run, suspect s'il est vieux ou laisse par un process disparu |
+| Taches planifiees | Windows seulement : pour chaque `RiveskaRadar-*`, dernier resultat et prochaine execution |
+| Logs | date de derniere ecriture de chaque `logs/*.log` et derniere fin de run qu'il contient |
+
+**Le signal le plus utile est le bloc Logs.** Un `logs/radar.log` fige depuis 3 heures
+alors que le job tourne toutes les 15 minutes est la preuve qu'une tache ne se declenche
+plus - c'est exactement ce qu'aucune autre verification ne montre.
+
+Trois garanties, par construction :
+
+- **Elle n'appelle jamais Reddit.** Le budget tolere est d'une requete par minute (voir
+  plus haut) : le depenser pour une verification prolongerait la penalite au lieu de la
+  laisser retomber. L'etat de Reddit se lit dans `logs/reddit.log`, point.
+- **Elle ne fait aucun appel LLM de scoring** : verifier la cle interroge l'endpoint de
+  compte d'OpenRouter, gratuit. La verification ne coute rien.
+- **Elle ne modifie rien** : aucune ecriture dans le Sheet, aucune purge, aucun verrou
+  pose (c'est volontaire : elle doit pouvoir tourner *pendant* un run pour en rendre
+  compte).
+
+Deux `--` sont normaux sur une machine qui n'est pas le mini PC de production :
+"aucune tache RiveskaRadar-*" et "aucun dossier logs/" - les taches et leurs logs
+n'existent que la ou tourne le Planificateur.
+
+Enfin, un code de resultat de tache merite d'etre connu : **`267011` signifie "jamais
+declenchee", ce n'est pas un echec** (c'est l'etat normal des premieres heures apres
+l'installation, et l'etat permanent d'une tache hebdomadaire installee un mardi). La
+commande l'affiche en `OK`, jamais en erreur.
+
+### Autres problemes
 
 **`npm install` echoue sur `better-sqlite3`**
 Ce paquet compile un module natif et a besoin des outils de build C++ de Windows.
