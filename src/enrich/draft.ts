@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { ScoredPost, EnrichedPost } from '../types.ts'
-import { appelerLlmJson } from './llm.ts'
+import { appelerLlmJson, DEBUT_CONTENU_TIERS, FIN_CONTENU_TIERS, CONSIGNE_CONTENU_TIERS } from './llm.ts'
 
 const schema = z.object({
   // Le post est tronque a 2000 caracteres avant envoi ; une traduction fidele
@@ -28,7 +28,9 @@ Champ traductionFr : traduction francaise fidele du post d'origine.
 Si le post est deja en francais, renvoie une chaine vide.
 
 Reponds UNIQUEMENT par un objet JSON :
-{"traductionFr": "<traduction ou chaine vide>", "brouillon": "<reponse>"}`
+{"traductionFr": "<traduction ou chaine vide>", "brouillon": "<reponse>"}
+
+${CONSIGNE_CONTENU_TIERS}`
 
 const CONTENU_MAX = 2000
 // Chaque caractere envoye au LLM est facture ; le titre n'apporte rien au-dela.
@@ -47,8 +49,10 @@ export interface OptionsDraft {
 export async function enrichirPost(post: ScoredPost, o: OptionsDraft): Promise<EnrichedPost | null> {
   const utilisateur = `Langue detectee: ${post.langue}
 Probleme: ${post.probleme}
+${DEBUT_CONTENU_TIERS}
 Titre: ${post.titre.slice(0, TITRE_MAX)}
-Contenu: ${post.contenu.slice(0, CONTENU_MAX)}`
+Contenu: ${post.contenu.slice(0, CONTENU_MAX)}
+${FIN_CONTENU_TIERS}`
 
   const resultat = await appelerLlmJson({
     cle: o.cle,
