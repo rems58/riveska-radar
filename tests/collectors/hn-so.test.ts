@@ -27,6 +27,24 @@ describe('collecterHackerNews', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('nope', { status: 500 })))
     expect(await collecterHackerNews()).toEqual([])
   })
+
+  it('renvoie un tableau vide sans lever si hits n est pas un tableau', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ hits: { pas: 'un tableau' } }), { status: 200 }),
+    ))
+    expect(await collecterHackerNews()).toEqual([])
+  })
+
+  it('ignore un hit dont created_at_i est absent, sans Invalid Date', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        hits: [{ objectID: '9', author: 'alice', title: 't', story_text: 'c' }],
+      }), { status: 200 }),
+    ))
+    const posts = await collecterHackerNews()
+    expect(posts).toEqual([])
+  })
 })
 
 describe('collecterStackOverflow', () => {
@@ -50,5 +68,27 @@ describe('collecterStackOverflow', () => {
   it('renvoie un tableau vide si l API echoue', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('reseau')))
     expect(await collecterStackOverflow()).toEqual([])
+  })
+
+  it('renvoie un tableau vide sans lever si items n est pas un tableau', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: { pas: 'un tableau' } }), { status: 200 }),
+    ))
+    expect(await collecterStackOverflow()).toEqual([])
+  })
+
+  it('decode un titre double-echappe sans le transformer en balise reelle', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        items: [{
+          question_id: 100, title: '&amp;lt;code&amp;gt;', body_markdown: '',
+          link: 'https://stackoverflow.com/q/100', creation_date: 1_760_000_000,
+          owner: { display_name: 'carl' },
+        }],
+      }), { status: 200 }),
+    ))
+    const posts = await collecterStackOverflow()
+    expect(posts[0]!.titre).toBe('&lt;code&gt;')
   })
 })

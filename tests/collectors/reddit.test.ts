@@ -87,4 +87,64 @@ describe('collecterReddit', () => {
     const posts = await collecterReddit({ clientId: 'id', clientSecret: 'secret', userAgent: 'ua' })
     expect(posts).toEqual([])
   })
+
+  it('remplace un auteur null par "inconnu", jamais null dans le RawPost', async () => {
+    const reponse = {
+      data: {
+        children: [
+          {
+            data: {
+              id: 'susp1', author: null, title: 'compte suspendu', selftext: '',
+              permalink: '/r/expo/comments/susp1/x/', created_utc: 1_760_000_000,
+            },
+          },
+        ],
+      },
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'tok' }), { status: 200 }))
+      .mockResolvedValue(new Response(JSON.stringify(reponse), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const posts = await collecterReddit({ clientId: 'id', clientSecret: 's', userAgent: 'ua' })
+    const post = posts.find((p) => p.id === 'reddit:susp1')
+    expect(post).toBeDefined()
+    expect(post!.auteur).toBe('inconnu')
+    expect(post!.auteur).not.toBeNull()
+  })
+
+  it('ignore un post dont created_utc est absent, sans Invalid Date', async () => {
+    const reponse = {
+      data: {
+        children: [
+          {
+            data: {
+              id: 'nodate1', author: 'bob', title: 'sans date', selftext: '',
+              permalink: '/r/expo/comments/nodate1/x/',
+              // created_utc absent
+            },
+          },
+        ],
+      },
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'tok' }), { status: 200 }))
+      .mockResolvedValue(new Response(JSON.stringify(reponse), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const posts = await collecterReddit({ clientId: 'id', clientSecret: 's', userAgent: 'ua' })
+    expect(posts.find((p) => p.id === 'reddit:nodate1')).toBeUndefined()
+    expect(posts.some((p) => Number.isNaN(p.publieLe.getTime()))).toBe(false)
+  })
+
+  it('renvoie un tableau vide sans lever si children n est pas un tableau', async () => {
+    const reponse = { data: { children: { pas: 'un tableau' } } }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'tok' }), { status: 200 }))
+      .mockResolvedValue(new Response(JSON.stringify(reponse), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const posts = await collecterReddit({ clientId: 'id', clientSecret: 's', userAgent: 'ua' })
+    expect(posts).toEqual([])
+  })
 })

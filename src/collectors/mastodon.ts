@@ -1,18 +1,11 @@
 import type { RawPost } from '../types.ts'
+import { recupererJson, versAuteur, dateValideOuNull } from './http.ts'
 
 /** Instances Mastodon publiques surveillees. */
 const INSTANCES = ['mastodon.social', 'fosstodon.org']
 
 /** Hashtags surveilles sur chaque instance. */
 const HASHTAGS = ['appstore', 'iosdev', 'androiddev', 'reactnative']
-
-interface MastodonStatus {
-  id: string
-  url: string
-  account: { acct: string }
-  content: string
-  created_at: string
-}
 
 /** Reduit le HTML des statuts Mastodon en texte brut lisible. */
 function retirerHtml(html: string): string {
@@ -22,6 +15,36 @@ function retirerHtml(html: string): string {
     .replace(/<[^>]+>/g, '')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+/**
+ * Construit un RawPost a partir d'un statut brut renvoye par une instance Mastodon.
+ * Renvoie null (et journalise) si un champ indispensable manque ou est invalide.
+ */
+function posteDepuisStatus(brut: unknown, instance: string): RawPost | null {
+  if (typeof brut !== 'object' || brut === null) return null
+  const s = brut as Record<string, unknown>
+
+  if (typeof s.id !== 'string' || typeof s.url !== 'string') return null
+
+  const publieLe = dateValideOuNull(new Date(typeof s.created_at === 'string' ? s.created_at : NaN))
+  if (!publieLe) {
+    console.warn(`[radar] mastodon : statut ${s.id} ignore (date invalide ou absente)`)
+    return null
+  }
+
+  const account = typeof s.account === 'object' && s.account !== null ? (s.account as Record<string, unknown>) : undefined
+  const texte = retirerHtml(typeof s.content === 'string' ? s.content : '')
+
+  return {
+    id: `mastodon:${instance}:${s.id}`,
+    source: 'mastodon',
+    url: s.url,
+    auteur: versAuteur(account?.acct),
+    titre: texte.slice(0, 120),
+    contenu: texte,
+    publieLe,
+  }
 }
 
 /**
@@ -35,27 +58,15 @@ export async function collecterMastodon(): Promise<RawPost[]> {
   for (const instance of INSTANCES) {
     for (const tag of HASHTAGS) {
       const url = `https://${instance}/api/v1/timelines/tag/${tag}?limit=20`
-      try {
-        const r = await fetch(url)
-        if (!r.ok) continue
-        const statuses = (await r.json()) as MastodonStatus[]
-        for (const s of statuses) {
-          const id = `mastodon:${instance}:${s.id}`
-          if (vus.has(id)) continue
-          vus.add(id)
-          const texte = retirerHtml(s.content)
-          posts.push({
-            id,
-            source: 'mastodon',
-            url: s.url,
-            auteur: s.account.acct,
-            titre: texte.slice(0, 120),
-            contenu: texte,
-            publieLe: new Date(s.created_at),
-          })
-        }
-      } catch {
-        // Instance/hashtag injoignable : on continue avec les suivants.
+      const statuses = await recupererJson<unknown>({ source: `mastodon:${instance}`, url })
+      if (!Array.isArray(statuses)) continue
+
+      for (const s of statuses) {
+        const post = posteDepuisStatus(s, instance)
+        if (!post) continue
+        if (vus.has(post.id)) continue
+        vus.add(post.id)
+        posts.push(post)
       }
     }
   }
