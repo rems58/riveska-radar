@@ -5,8 +5,8 @@ import path from 'node:path'
 import { COMMANDES, chargerEnv } from '../src/index.ts'
 
 describe('COMMANDES', () => {
-  it('expose les quatre jobs', () => {
-    expect(Object.keys(COMMANDES).sort()).toEqual(['radar', 'recheck', 'triggers', 'weekly'])
+  it('expose les cinq jobs, dont reddit (search.rss, commande separee de radar)', () => {
+    expect(Object.keys(COMMANDES).sort()).toEqual(['radar', 'recheck', 'reddit', 'triggers', 'weekly'])
   })
 })
 

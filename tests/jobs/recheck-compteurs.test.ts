@@ -6,42 +6,34 @@ afterEach(() => vi.restoreAllMocks())
 const OPTS = { redditUserAgent: 'riveska-radar/test' }
 
 describe('compterReponses - Reddit', () => {
-  it('compte les commentaires du second element du listing JSON', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify([{ data: {} }, { data: { children: [1, 2, 3] } }]),
-        { status: 200 },
-      ),
-    )
-    vi.stubGlobal('fetch', fetchMock)
-
-    const r = await compterReponses('https://reddit.com/r/x/comments/abc/titre/', OPTS)
-
-    expect(r).toBe(3)
-    const [urlAppelee, init] = fetchMock.mock.calls[0]!
-    expect(String(urlAppelee)).toContain('.json')
-    expect((init?.headers as Record<string, string>)['User-Agent']).toBe('riveska-radar/test')
-  })
-
-  it('renvoie -1 si le JSON ne ressemble pas au listing attendu', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 200 })))
-    const r = await compterReponses('https://reddit.com/r/x/comments/abc/titre/', OPTS)
-    expect(r).toBe(-1)
-  })
-
-  it('renvoie -1 sans appel reseau si redditUserAgent est absent (Reddit desactive)', async () => {
+  it('renvoie -1 SANS AUCUN appel reseau, inconditionnellement (jamais de /.json, contrainte Reddit)', async () => {
+    // Reddit garde /new.json, /search.json et l API OAuth deliberement fermes
+    // (Responsible Builder Policy, 403/401 mesures). Le suivi 48h par post exigerait
+    // <url>.json, le meme genre de chemin - on ne le touche jamais, quelle que soit
+    // l origine du post (API OAuth ou search.rss) ni la valeur de redditUserAgent.
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const r = await compterReponses('https://reddit.com/r/x/comments/abc/titre/', {})
+
+    const r = await compterReponses('https://reddit.com/r/x/comments/abc/titre/', OPTS)
+
     expect(r).toBe(-1)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('renvoie -1 si la requete echoue', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {})
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('reseau HS')))
-    const r = await compterReponses('https://reddit.com/r/x/comments/abc/titre/', OPTS)
+  it('renvoie -1 meme sans options fournies du tout', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const r = await compterReponses('https://reddit.com/r/x/comments/abc/titre/')
     expect(r).toBe(-1)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('renvoie -1 aussi pour www.reddit.com', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const r = await compterReponses('https://www.reddit.com/r/x/comments/abc/titre/')
+    expect(r).toBe(-1)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

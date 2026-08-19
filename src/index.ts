@@ -12,10 +12,12 @@ import { formaterProspect, envoyerTelegram } from './sinks/telegram.ts'
 import type { OptionsTelegram } from './sinks/telegram.ts'
 import { lireStatutsDepuis } from './sinks/sheets-lecture.ts'
 import { executerRadar } from './jobs/radar.ts'
+import { executerReddit } from './jobs/reddit.ts'
 import { executerRecheck } from './jobs/recheck.ts'
 import { executerTriggers } from './jobs/triggers.ts'
 import { executerWeekly } from './jobs/weekly.ts'
 import { compterReponses } from './jobs/recheck-compteurs.ts'
+import { collecterRedditRss } from './collectors/reddit-rss.ts'
 import { acquerirVerrou, libererVerrou, rafraichirVerrou } from './verrou.ts'
 
 // La base, le .env et les verrous vivent a cote du projet (src/.. = racine de
@@ -112,11 +114,47 @@ async function commandeRadar(): Promise<void> {
   console.log('[radar] commande "radar" terminee :', resultat)
 }
 
-async function commandeRecheck(): Promise<void> {
+/**
+ * Reddit via search.rss (collectors/reddit-rss.ts), en sequentiel strict a 1
+ * requete/minute - contrainte mesuree, voir ce fichier. C'est pour cette raison
+ * que Reddit n'est PAS dans collecteursParDefaut()/commandeRadar : une commande
+ * separee, planifiee une fois par heure (voir scripts/installer-taches.ps1),
+ * respecte a la fois la cadence de radar et la politesse envers Reddit.
+ *
+ * Reutilise le meme pipeline aval que commandeRadar (jobs/pipeline.ts, via
+ * executerReddit) : meme base pour la deduplication (donc aucun risque de doublon
+ * si l'API OAuth Reddit redevient un jour active en plus de ce flux RSS), memes
+ * compteurs d'echecs/abandons.
+ */
+async function commandeReddit(): Promise<void> {
   const cfg = getConfig()
+  const opts = optionsSheets()
+  await assurerEnTetes(opts)
+
+  const resultat = await executerReddit({
+    db: db(),
+    collecter: () => collecterRedditRss(),
+    noter: (p, apparitions) =>
+      noterPost(p, { cle: cfg.openrouterApiKey, modele: cfg.openrouterModel, apparitionsPrecedentes: apparitions }),
+    enrichir: (p) => enrichirPost(p, { cle: cfg.openrouterApiKey, modele: cfg.openrouterModel }),
+    ecrireSheet: (posts) => ajouterLignes(posts, opts),
+    notifier: (p, ligne) => envoyerTelegram(formaterProspect(p, ligne), optionsTelegram()),
+    notifierTexte: notifierTelegram,
+    seuil: cfg.scoreThreshold,
+    ageMaxJours: cfg.maxPostAgeDays,
+    retentionJours: cfg.retentionDays,
+  })
+
+  console.log('[radar] commande "reddit" terminee :', resultat)
+}
+
+async function commandeRecheck(): Promise<void> {
+  // Reddit n'a plus de suivi 48h (voir jobs/recheck-compteurs.ts) : compter les
+  // reponses d'un post precis exigerait un endpoint /.json, un chemin que Reddit
+  // garde deliberement ferme - on ne le contourne jamais, meme via ce job.
   const resultat = await executerRecheck({
     db: db(),
-    compterReponses: (url) => compterReponses(url, { redditUserAgent: cfg.redditUserAgent }),
+    compterReponses: (url) => compterReponses(url),
     notifier: notifierTelegram,
   })
 
@@ -157,13 +195,14 @@ async function commandeWeekly(): Promise<void> {
 }
 
 /**
- * Les quatre jobs, exposes par nom pour le CLI et pour les tests.
+ * Les cinq jobs, exposes par nom pour le CLI et pour les tests.
  * Construire cet objet n'appelle getConfig() nulle part : chaque commande ne lit
  * la config qu'a son execution reelle, pour qu'un simple import du module (les
  * tests) ne leve jamais en l'absence de .env.
  */
 export const COMMANDES: Record<string, () => Promise<void>> = {
   radar: commandeRadar,
+  reddit: commandeReddit,
   recheck: commandeRecheck,
   triggers: commandeTriggers,
   weekly: commandeWeekly,
