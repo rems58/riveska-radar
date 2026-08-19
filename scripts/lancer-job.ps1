@@ -41,8 +41,11 @@ if ((Test-Path $log) -and ((Get-Item $log).Length -gt $LIMITE_OCTETS)) {
 # qui n'a en realite rien fait.
 $node = (Get-Command node -ErrorAction SilentlyContinue).Source
 if (-not $node) {
+    # Pas de -Encoding ici : le defaut de Out-File sous PowerShell 5.1 (UTF-16LE
+    # avec BOM) doit rester identique a celui de *>> plus bas, sinon le meme fichier
+    # de log melange deux encodages selon le chemin de code qui a ecrit en dernier.
     "[$(Get-Date -Format o)] [radar] node introuvable dans le PATH - impossible de lancer '$Commande'" |
-        Out-File -FilePath $log -Append -Encoding utf8
+        Out-File -FilePath $log -Append
     exit 1
 }
 

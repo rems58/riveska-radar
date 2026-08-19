@@ -39,6 +39,18 @@ export interface OptionsSheets {
   onglet: string
 }
 
+/**
+ * Entoure le nom de l'onglet de guillemets simples (syntaxe A1 standard), en
+ * echappant un guillemet simple interne en le doublant (regle Google Sheets).
+ * Sans ca, un SHEET_TAB contenant un espace (ex: "Prospects Riveska") produit une
+ * plage invalide ("Prospects Riveska!A:M") : la requete echoue en 400 et TOUS les
+ * prospects du run sont perdus en silence (echec technique -> abandon apres 3 runs).
+ * Toujours quoter, y compris pour un nom simple sans espace : accepte dans tous les cas.
+ */
+export function citerOnglet(onglet: string): string {
+  return `'${onglet.replace(/'/g, "''")}'`
+}
+
 function client(o: OptionsSheets) {
   const auth = new google.auth.JWT({
     email: o.email,
@@ -72,12 +84,12 @@ export async function assurerEnTetes(o: OptionsSheets): Promise<void> {
     const api = client(o)
     const r = await api.spreadsheets.values.get({
       spreadsheetId: o.sheetId,
-      range: `${o.onglet}!A1:M1`,
+      range: `${citerOnglet(o.onglet)}!A1:M1`,
     })
     if (r.data.values && r.data.values.length > 0) return
     await api.spreadsheets.values.update({
       spreadsheetId: o.sheetId,
-      range: `${o.onglet}!A1`,
+      range: `${citerOnglet(o.onglet)}!A1`,
       // RAW volontaire : USER_ENTERED interpreterait une cellule commencant par
       // =, +, - ou @ comme une formule. Le contenu vient de posts publics ecrits
       // par des tiers, donc un vecteur d'injection de formule. Ne pas changer.
@@ -100,7 +112,7 @@ export async function ajouterLignes(posts: EnrichedPost[], o: OptionsSheets): Pr
     const api = client(o)
     const r = await api.spreadsheets.values.append({
       spreadsheetId: o.sheetId,
-      range: `${o.onglet}!A:M`,
+      range: `${citerOnglet(o.onglet)}!A:M`,
       // RAW volontaire : voir commentaire dans assurerEnTetes. Ne pas passer en USER_ENTERED.
       valueInputOption: 'RAW',
       insertDataOption: 'INSERT_ROWS',

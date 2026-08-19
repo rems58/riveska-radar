@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { EN_TETES, versLigne, ajouterLignes } from '../../src/sinks/sheets.ts'
+import { EN_TETES, versLigne, ajouterLignes, citerOnglet } from '../../src/sinks/sheets.ts'
 import type { EnrichedPost } from '../../src/types.ts'
 
 const post: EnrichedPost = {
@@ -48,6 +48,18 @@ describe('sheets', () => {
     for (const valeur of l) {
       expect(valeur.length).toBeLessThanOrEqual(40_000)
     }
+  })
+
+  it('citerOnglet quote un nom simple', () => {
+    expect(citerOnglet('Prospects')).toBe("'Prospects'")
+  })
+
+  it('citerOnglet quote un nom avec espace (sinon plage A1 invalide -> 400 -> prospects perdus)', () => {
+    expect(citerOnglet('Prospects Riveska')).toBe("'Prospects Riveska'")
+  })
+
+  it('citerOnglet echappe un guillemet simple interne en le doublant (regle Sheets)', () => {
+    expect(citerOnglet("L'onglet")).toBe("'L''onglet'")
   })
 
   it('ajouterLignes([]) renvoie null sans appel reseau', async () => {

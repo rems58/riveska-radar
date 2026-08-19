@@ -1,6 +1,6 @@
 import { google } from 'googleapis'
 import { dateValideOuNull } from '../collectors/http.ts'
-import { EN_TETES } from './sheets.ts'
+import { EN_TETES, citerOnglet } from './sheets.ts'
 import type { OptionsSheets } from './sheets.ts'
 
 /**
@@ -62,7 +62,7 @@ export async function lireStatutsDepuis(depuis: Date, o: OptionsSheets): Promise
     const api = client(o)
     const r = await api.spreadsheets.values.get({
       spreadsheetId: o.sheetId,
-      range: `${o.onglet}!${COL_DATE}2:${COL_STATUT}`,
+      range: `${citerOnglet(o.onglet)}!${COL_DATE}2:${COL_STATUT}`,
     })
 
     const lignes = r.data.values ?? []

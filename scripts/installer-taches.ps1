@@ -1,8 +1,13 @@
 # scripts/installer-taches.ps1
 # Enregistre les quatre jobs du radar dans le Planificateur de taches Windows.
-# A lancer une fois, dans un PowerShell ouvert en administrateur, depuis riveska-radar/.
+# A lancer une fois, dans un PowerShell ouvert en administrateur.
 
-$dossier = (Get-Location).Path
+# Racine du projet deduite de l'EMPLACEMENT DU SCRIPT (scripts/.. ), pas du
+# repertoire courant : (Get-Location).Path pointait vers un dossier different -
+# et donc inexistant du point de vue de $lanceur/-WorkingDirectory, sans jamais le
+# signaler - des qu'on lance ce script depuis ailleurs que riveska-radar/ (double-clic,
+# raccourci, autre repertoire ouvert dans le terminal administrateur).
+$dossier = Split-Path -Parent $PSScriptRoot
 
 # Sans cette garde, un Node absent du PATH ferait enregistrer les quatre taches
 # quand meme, avec une action cassee, sans jamais le signaler : mieux vaut
