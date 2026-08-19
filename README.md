@@ -50,17 +50,46 @@ qui le consomme utilise le flux comme prevu, ce n'est pas un contournement du 40
 douzaine de requetes couvrant les 5 langues, dans les memes signaux de douleur que
 les autres sources (`filter/keywords.ts`).
 
-**Debit strict et mesure : 1 requete par minute, en sequentiel.** 5 requetes
-espacees de 3s ont donne 1 succes puis 4 echecs 429 ; apres un premier 429, les
-delais de reprise mesures n'ont pas ete strictement monotones (succes a +20s et
-+45s, echec a +30s - une fenetre glissante cote Reddit est probable). Consequence :
-- **Jamais de parallelisme** sur cette source, contrairement aux autres.
+### Ce qui est prouve, et ce qui ne l'est pas
+
+**Prouve en appel reel (2026-08-19)** :
+- Le flux repond avec de vraies donnees : une recherche "app rejected" a renvoye
+  **25 entrees Atom** (22 posts + 3 resultats de subreddits, ignores).
+- Le parsing fonctionne : id, auteur, lien, date, contenu correctement extraits sur
+  ces 22 posts reels.
+- **L'espacement de 60s entre deux requetes est respecte** : mesure directe sur
+  l'ecart reel entre deux appels `fetch()` successifs (pas juste lu dans le code) :
+  **60,3s puis 60,1s**.
+
+**PAS prouve : la tenue dans la duree a cadence horaire.** Reddit limite par IP et
+**escalade** (429 d'abord, puis 403 - blocage temporaire - en cas d'insistance) :
+mesure directe, la MEME URL avec le MEME user-agent a echoue en 429 aussi bien en
+curl qu'en fetch Node, alors qu'elle avait repondu 200 avec 25 entrees une heure
+plus tot. Nos propres mesures cumulees de verification ont mis l'IP de test en
+penalite. Nous n'avons donc **pas pu valider un fonctionnement soutenu depuis une
+IP non penalisee** - seulement que le collecteur se comporte correctement (bon
+espacement, arret propre) face a cette limite.
+
+**Si `reddit` renvoie des 403 en serie, ce n'est pas une panne, c'est la
+limitation Reddit qui retombe d'elle-meme.** Ne jamais relancer la commande
+manuellement dans ce cas : ca ne ferait qu'entretenir le blocage. Le prochain run
+planifie (dans l'heure) reessaiera normalement.
+
+### Comment le collecteur se comporte face a cette limite
+
+- **Jamais de parallelisme** sur cette source, contrairement aux autres : au moins
+  60s entre deux requetes, en sequentiel strict.
 - **Une commande separee (`reddit`), planifiee une fois par heure** - pas dans
   `radar` (toutes les 15 min, en parallele) : l'y greffer casserait soit la
   cadence de radar, soit la politesse envers Reddit. 12 requetes x 1/min = jusqu'a
   12 minutes par run, largement dans les clous d'une cadence horaire.
-- Sur un 429, une seule retentative apres un delai plus long, puis abandon propre
-  de cette requete (les autres continuent).
+- Sur une reponse limitee (**429 ou 403 - le 403 recoit exactement le meme
+  traitement que le 429**, c'est la forme escaladee de la meme limite, pas une
+  erreur distincte), une seule retentative apres un delai plus long.
+- **Si le retry echoue AUSSI** (2 reponses limitees consecutives), **le run
+  s'arrete immediatement** sans tenter les requetes restantes - les enchainer
+  prolongerait la penalite au lieu de la laisser retomber. Mieux vaut zero post
+  ce cycle-ci ; le run suivant (dans l'heure) reessaiera depuis le debut.
 
 Reutilise **exactement le meme pipeline aval** que `radar` (`jobs/pipeline.ts`,
 factorise pour les deux jobs) : meme deduplication, memes compteurs d'echecs et
@@ -74,25 +103,37 @@ source qui a collecte le post : compter les reponses d'un post precis exigerait
 `<url>.json`, le meme genre de chemin ferme evoque plus haut. Voir le tableau
 "Suivi 48h" plus bas.
 
-**`search.rss` est bruyant : verifie sur des donnees reelles.** Une recherche
-"app rejected" reelle a renvoye 25 entrees (22 posts + 3 resultats de subreddits,
-ignores) ; la majorite n'a aucun rapport avec Riveska (Reddit fait du matching flou,
-pas une recherche par phrase exacte - "getting is rejection... dating apps" est
-remonte pour "app rejected" sans contenir cette phrase). Le prefiltre existant
-(phrases exactes, `filter/keywords.ts`) a correctement ecarte ce bruit. Deux
-constats reels, assumes :
-- **Un faux positif mesure** : un post sans rapport (methodologie personnelle
-  d'usage de chatbots IA) a passe le prefiltre via le signal `vibe coding`, cite en
-  passant sans lien avec une app ou un store. Non corrige ici : le signal LLM
+### `search.rss` est bruyant : verifie et corrige sur des donnees reelles
+
+Une recherche "app rejected" reelle a renvoye 25 entrees (22 posts + 3 resultats
+de subreddits, ignores) ; la majorite n'a aucun rapport avec Riveska (Reddit fait
+du matching flou, pas une recherche par phrase exacte - "getting is rejection...
+dating apps" est remonte pour "app rejected" sans contenir cette phrase). Deux
+constats reels sur cet echantillon, traites differemment :
+
+- **Faux positif mesure, laisse tel quel** : un post sans rapport (methodologie
+  personnelle d'usage de chatbots IA) passe le prefiltre via le signal
+  `vibe coding`, cite en passant sans lien avec une app ou un store. Le signal LLM
   suivant (`enrich/score.ts`, seuil 0-39 = hors sujet) l'aurait rejete pour le prix
-  d'un seul appel LLM bon marche - un cout marginal, pas un risque de polluer le Sheet.
-- **Des faux negatifs reels, non corriges** : deux posts genuinement pertinents de
-  cet echantillon ("rejected due to privacy policy violation", "faced 'design spam'
-  rejection") n'ont matche aucune phrase exacte de `SIGNAUX_DOULEUR` (prose
-  naturelle, pas les titres factuels d'un Stack Overflow). Corriger `SIGNAUX_DOULEUR`
-  impacterait les 6 autres collecteurs qui le partagent : hors perimetre de ce
-  changement, qui se limite a Reddit. A garder en tete pour un futur ajustement du
-  prefiltre, teste separement sur toutes les sources.
+  d'un seul appel LLM bon marche - un cout marginal, pas un risque de polluer le
+  Sheet. Arbitrage assume : a ce stade du produit, un prospect manque coute plus
+  cher qu'un appel LLM gaspille.
+- **Faux negatifs mesures, corriges** : deux posts genuinement pertinents de cet
+  echantillon ("Initially got rejected due to privacy policy violation...
+  reviewer rejected it", "i am guessing this is reason for rejection") ne
+  matchaient aucune phrase exacte de `SIGNAUX_DOULEUR` - la prose naturelle de
+  Reddit, pas les titres factuels d'un Stack Overflow. `SIGNAUX_DOULEUR`
+  (partagee par les 6 collecteurs) a ete elargie avec 4 phrases reprises **mot
+  pour mot** de ces posts reels ('got rejected due to', 'reviewer rejected',
+  'reason for rejection', 'rejection in app store'), plus leurs traductions
+  FR/DE/ES/IT (analogies linguistiques du concept "rejete a cause de"/"motif du
+  rejet" - **non verifiees sur des posts reels** dans ces langues, aucun
+  echantillon reel collecte au-dela de l'anglais a ce jour). Mesure sur les 22
+  posts reels : **1 candidat avant -> 3 apres**, les deux prospects manques sont
+  desormais retenus, le faux positif `vibe coding` reste le seul bruit. Verifie
+  qu'aucun des nouveaux mots-cles ne recoupe les fixtures de test des 5 autres
+  collecteurs (aucune correspondance trouvee) : pas de derive de volume attendue
+  ailleurs, mais non mesuree en reel faute de large echantillon pour ces sources.
 
 **Un flux "forums" (forums.expo.dev + developer.apple.com/forums) a existe puis a ete
 retire.** Verifie en appel reel : les deux flux sont morts - Expo redirige entierement
@@ -349,17 +390,18 @@ script. Un job planifie deja enregistre qui perd Node en cours de route (desinst
 deplacement) l'ecrit dans son propre log au lieu d'echouer en silence - inutile de
 relancer `installer-taches.ps1` pour une simple mise a jour de Node au meme emplacement.
 
-**`reddit` renvoie 0 posts, les logs montrent des 403 sur `search.rss`**
-Verifie en execution reelle (2026-08-19) : le collecteur respecte scrupuleusement 1
-requete/minute (espacement mesure : 60,1s et 60,3s), mais Reddit peut malgre tout
-repondre 403 pendant un moment si l'IP a subi plusieurs requetes trop rapprochees
-PEU AVANT - meme des tests manuels isoles (un `curl` rapide pour verifier un flux, par
-exemple) comptent. Le comportement mesure n'est pas parfaitement previsible (un retry a
-+45s a reussi, un a +30s a echoue) : une fenetre glissante cote Reddit est probable. Il
-n'y a rien a corriger dans ce cas - la commande `reddit` continue de tourner une fois par
-heure sans forcer le rythme, et le blocage se leve de lui-meme apres un certain temps
-sans requete. Ne JAMAIS reduire `DELAI_ENTRE_REQUETES_MS` ni lancer `reddit` manuellement
-en boucle pour "tester" : ca prolonge le blocage plutot que de le resoudre.
+**`reddit` renvoie 0 posts, les logs montrent des 429/403 sur `search.rss`**
+Ce n'est pas une panne : Reddit limite par IP et **escalade** (429 d'abord, puis 403
+en cas d'insistance) - mesure directe, la meme URL avec le meme user-agent a echoue
+en 429 aussi bien en curl qu'en fetch Node, une heure apres avoir repondu 200. Le
+collecteur respecte scrupuleusement 1 requete/minute (espacement mesure : 60,1s et
+60,3s) et **s'arrete de lui-meme** des qu'une requete reste limitee apres son retry
+(2 reponses 429/403 consecutives), sans tenter les requetes restantes - il n'y a
+donc rien a corriger cote code. La limitation retombe d'elle-meme avec le temps ;
+le prochain run planifie (dans l'heure) reessaiera normalement.
+**Ne JAMAIS relancer `reddit` manuellement dans ce cas**, ni en boucle pour
+"tester" : chaque appel supplementaire prolonge la penalite au lieu de la laisser
+retomber - meme un simple `curl` de verification isole compte pour Reddit.
 
 **Telegram ne notifie jamais**
 1. Verifier que `TELEGRAM_CHAT_ID` est correct : relancer `getUpdates` (voir tableau
