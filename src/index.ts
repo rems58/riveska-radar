@@ -16,13 +16,20 @@ import { executerRadar } from './jobs/radar.ts'
 import { executerRecheck } from './jobs/recheck.ts'
 import { executerTriggers } from './jobs/triggers.ts'
 import { executerWeekly } from './jobs/weekly.ts'
+import { acquerirVerrou, libererVerrou } from './verrou.ts'
 
-// La base et le .env vivent a cote du projet (src/.. = racine de riveska-radar/), pas
-// dans un dossier temporaire ni relativement au repertoire courant : le Planificateur
-// de taches peut lancer node depuis n'importe ou.
+// La base, le .env et les verrous vivent a cote du projet (src/.. = racine de
+// riveska-radar/), pas dans un dossier temporaire ni relativement au repertoire
+// courant : le Planificateur de taches peut lancer node depuis n'importe ou.
 const RACINE = path.join(import.meta.dirname, '..')
 const CHEMIN_DB = path.join(RACINE, 'radar.db')
 const CHEMIN_ENV = path.join(RACINE, '.env')
+
+// Duree au-dela de laquelle un verrou est considere perime meme si son process
+// semble encore vivant (garde-fou contre un PID recycle par l'OS apres un crash).
+// Tres large par rapport a la duree normale d'un run : ~40 appels Reddit sequentiels
+// + jusqu'a 2 appels LLM par candidat peuvent legitimement prendre plusieurs minutes.
+const DUREE_MAX_VERROU_MS = 20 * 60 * 1000
 
 /**
  * Charge le fichier .env a la racine du projet dans process.env. Node ne le fait
@@ -164,11 +171,15 @@ export const COMMANDES: Record<string, () => Promise<void>> = {
   weekly: commandeWeekly,
 }
 
+function cheminVerrou(commande: string): string {
+  return path.join(RACINE, `${commande}.lock`)
+}
+
 async function main(): Promise<void> {
   const commande = process.argv[2]
   const executer = commande ? COMMANDES[commande] : undefined
 
-  if (!executer) {
+  if (!commande || !executer) {
     console.error(
       `[radar] usage : node src/index.ts <${Object.keys(COMMANDES).join('|')}>` +
         (commande ? ` (commande inconnue : "${commande}")` : ''),
@@ -179,12 +190,25 @@ async function main(): Promise<void> {
 
   chargerEnv()
 
+  // Le Planificateur relance radar toutes les 15 minutes sans verifier si le run
+  // precedent est termine. Un chevauchement ferait scorer/facturer deux fois les
+  // memes posts (marquerVu n'intervient qu'apres scoring+enrichissement+ecriture).
+  const verrou = cheminVerrou(commande)
+  if (!acquerirVerrou(verrou, DUREE_MAX_VERROU_MS)) {
+    console.warn(
+      `[radar] commande "${commande}" ignoree : un run est deja en cours (verrou ${verrou}).`,
+    )
+    return
+  }
+
   try {
     await executer()
   } catch (err) {
     const raison = err instanceof Error ? (err.stack ?? err.message) : String(err)
     console.error(`[radar] commande "${commande}" a echoue : ${raison}`)
     process.exitCode = 1
+  } finally {
+    libererVerrou(verrou)
   }
 }
 
