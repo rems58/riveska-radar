@@ -3,23 +3,28 @@
 # A lancer une fois, dans un PowerShell ouvert en administrateur, depuis riveska-radar/.
 
 $dossier = (Get-Location).Path
-$node = (Get-Command node).Source
 
-# Le Planificateur de taches n'affiche ni ne conserve la sortie console d'une
-# action lancee directement : sans redirection, un run rate est invisible.
-# On passe donc par cmd.exe pour rediriger stdout+stderr vers un fichier par job,
-# en mode ajout (>>) pour garder l'historique des runs precedents.
-$dossierLogs = Join-Path $dossier 'logs'
-New-Item -ItemType Directory -Force -Path $dossierLogs | Out-Null
+# Sans cette garde, un Node absent du PATH ferait enregistrer les quatre taches
+# quand meme, avec une action cassee, sans jamais le signaler : mieux vaut
+# echouer tout de suite avec un message clair qu'a la premiere execution planifiee,
+# invisible sans surveillance humaine.
+$commandeNode = Get-Command node -ErrorAction SilentlyContinue
+if (-not $commandeNode) {
+    Write-Error "Node introuvable dans le PATH. Installe Node.js (https://nodejs.org), verifie 'node --version' dans un NOUVEAU terminal, puis relance ce script."
+    exit 1
+}
+
+$lanceur = Join-Path $dossier 'scripts\lancer-job.ps1'
 
 function Ajouter-Tache {
     param([string]$Nom, [string]$Commande, $Declencheur)
 
-    $log = Join-Path $dossierLogs "$Commande.log"
-    $argCmd = "/c `"$node`" src/index.ts $Commande >> `"$log`" 2>&1"
+    # lancer-job.ps1 gere la rotation du log (5 Mo) et resout le chemin de node a
+    # chaque execution (pas seulement a l'installation) : voir ce fichier pour le detail.
+    $argument = "-NoProfile -ExecutionPolicy Bypass -File `"$lanceur`" -Commande $Commande"
 
-    $action = New-ScheduledTaskAction -Execute 'cmd.exe' `
-        -Argument $argCmd -WorkingDirectory $dossier
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument $argument -WorkingDirectory $dossier
 
     # Demarre meme sur batterie et relance en cas d'echec.
     $reglages = New-ScheduledTaskSettingsSet -StartWhenAvailable `
@@ -49,4 +54,4 @@ $t4 = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 9am
 Ajouter-Tache -Nom 'RiveskaRadar-Weekly' -Commande 'weekly' -Declencheur $t4
 
 Write-Host "4 taches enregistrees. Verifier avec : Get-ScheduledTask -TaskName 'RiveskaRadar-*'"
-Write-Host "Logs par job dans : $dossierLogs"
+Write-Host "Logs par job dans : $(Join-Path $dossier 'logs') (rotation automatique au-dela de 5 Mo)"
