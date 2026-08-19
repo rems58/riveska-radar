@@ -70,6 +70,41 @@ La base locale `radar.db` (SQLite) est creee automatiquement a la racine du proj
 premier lancement - elle memorise les posts deja vus pour ne jamais les retraiter deux
 fois (et ne jamais refacturer un appel LLM deja paye).
 
+Le fichier `.env` est charge automatiquement (via `process.loadEnvFile`, natif depuis
+Node 20.12) a chaque lancement d'une commande, depuis la racine du projet - peu importe
+le repertoire courant. Une variable deja presente dans l'environnement du process (lancement
+manuel, CI) n'est jamais ecrasee par le contenu du `.env`.
+
+Chaque commande pose un verrou de process (fichier `<commande>.lock` a la racine, ex.
+`radar.lock`) pendant son execution et le libere en fin de run. Si le run precedent de la
+meme commande tourne encore (radar est relance toutes les 15 minutes par le Planificateur
+et peut legitimement prendre plus longtemps : ~40 appels Reddit sequentiels + jusqu'a 2
+appels LLM par candidat), le nouveau lancement s'arrete immediatement avec un avertissement
+plutot que de scorer/facturer deux fois les memes posts. Un verrou dont le process n'existe
+plus (crash, redemarrage) est automatiquement considere perime au lancement suivant - il
+n'y a jamais besoin de le supprimer a la main.
+
+## Suivi 48h (`recheck`) : couverture partielle, assumee
+
+`recheck` compte les reponses recues par chaque prospect 48h apres detection, pour
+signaler ceux restes sans reponse. Cette verification n'est possible que sur les sources
+qui exposent une API publique adaptee :
+
+| Source | Suivi 48h |
+|---|---|
+| Reddit | oui (nombre de commentaires via l'endpoint JSON public du post) |
+| Hacker News | oui (enfants directs de l'item, API Algolia) |
+| Stack Overflow | oui (`answer_count`, API StackExchange) |
+| Bluesky | non |
+| Mastodon | non |
+| Forums (RSS) | non |
+
+Bluesky, Mastodon et les forums suivis par RSS n'exposent pas d'equivalent simple et sans
+cle pour compter les reponses a un post precis : ces prospects ne declenchent jamais la
+notification "toujours sans reponse apres 48h", meme s'ils restent effectivement sans
+reponse. Ce n'est pas un bug silencieux : c'est une limite connue, documentee ici plutot
+que de laisser croire a une couverture universelle.
+
 ## Planification Windows
 
 Le radar doit tourner en continu. Sous Windows, le Planificateur de taches s'en charge :
