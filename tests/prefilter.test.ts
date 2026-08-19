@@ -56,4 +56,39 @@ describe('prefiltrer', () => {
     const p = post({ titre: 'Question', contenu: 'I have no mac to build my ios app' })
     expect(prefiltrer([p], 30)).toHaveLength(1)
   })
+
+  it('rejette un faux positif par sous-chaine (no machine learning)', () => {
+    const p = post({ titre: 'I have no machine learning experience' })
+    expect(prefiltrer([p], 30)).toHaveLength(0)
+  })
+
+  it('garde toujours le vrai signal no mac', () => {
+    const p = post({ titre: 'I have no mac to build my ios app' })
+    expect(prefiltrer([p], 30)).toHaveLength(1)
+  })
+
+  it('garde bolt.new avec le point litteral echappe', () => {
+    const p = post({ titre: 'built with bolt.new' })
+    expect(prefiltrer([p], 30)).toHaveLength(1)
+  })
+
+  it('ne laisse pas le point jouer les jokers (boltXnew)', () => {
+    const p = post({ titre: 'boltXnew is great' })
+    expect(prefiltrer([p], 30)).toHaveLength(0)
+  })
+
+  it('garde un mot-cle avec tirets en frontiere (d-u-n-s)', () => {
+    const p = post({ titre: 'need a d-u-n-s number' })
+    expect(prefiltrer([p], 30)).toHaveLength(1)
+  })
+
+  it('garde un signal en fin de phrase avec ponctuation', () => {
+    const p = post({ titre: 'my app rejected.' })
+    expect(prefiltrer([p], 30)).toHaveLength(1)
+  })
+
+  it('rejette un faux positif par sous-chaine sur un nombre plus long (guideline 4.35)', () => {
+    const p = post({ titre: 'FYI guideline 4.35 was updated, nothing about my case here' })
+    expect(prefiltrer([p], 30)).toHaveLength(0)
+  })
 })

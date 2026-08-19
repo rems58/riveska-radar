@@ -71,3 +71,31 @@ export function normaliser(texte: string): string {
     .normalize('NFD')
     .replace(REGEX_DIACRITIQUES, '')
 }
+
+// Metacaracteres regex a echapper avant de composer un pattern a partir d'un mot-cle
+// brut (ex : le point de "bolt.new" ne doit pas jouer les jokers).
+const REGEX_METACARACTERES = /[.*+?^${}()|[\]\\]/g
+
+function echapperRegex(motCle: string): string {
+  return motCle.replace(REGEX_METACARACTERES, '\\$&')
+}
+
+/**
+ * Compile un mot-cle en regex a frontieres de mot, pour eviter les faux positifs
+ * par sous-chaine (ex : "no mac to build" ne doit pas matcher dans un mot plus long,
+ * "guideline 4.3" ne doit pas matcher "guideline 4.35"). Tous les mots-cles de nos
+ * listes commencent et finissent par un caractere alphanumerique, donc \b se comporte
+ * normalement aux deux bornes (le cas "d-u-n-s" reste couvert : \b matche entre le
+ * debut de chaine/espace et "d", et entre "s" et la fin de chaine/espace ; les tirets
+ * internes n'ont pas besoin de \b puisqu'ils font deja partie du mot-cle).
+ */
+function compilerMotCle(motCle: string): RegExp {
+  return new RegExp(`\\b${echapperRegex(motCle)}\\b`)
+}
+
+/**
+ * Regex precompilees au chargement du module (pas a chaque appel de prefiltrer,
+ * qui tourne sur des centaines de posts).
+ */
+export const REGEX_SIGNAUX: RegExp[] = [...SIGNAUX_DOULEUR, ...SIGNAUX_VIBECODE].map(compilerMotCle)
+export const REGEX_ANTI_SIGNAUX: RegExp[] = ANTI_SIGNAUX.map(compilerMotCle)

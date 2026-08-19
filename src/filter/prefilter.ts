@@ -1,7 +1,5 @@
 import type { RawPost } from '../types.ts'
-import { SIGNAUX_DOULEUR, SIGNAUX_VIBECODE, ANTI_SIGNAUX, normaliser } from './keywords.ts'
-
-const SIGNAUX = [...SIGNAUX_DOULEUR, ...SIGNAUX_VIBECODE]
+import { REGEX_SIGNAUX, REGEX_ANTI_SIGNAUX, normaliser } from './keywords.ts'
 
 /**
  * Filtre gratuit applique avant tout appel LLM.
@@ -13,7 +11,10 @@ export function prefiltrer(posts: RawPost[], ageMaxJours: number): RawPost[] {
   return posts.filter((p) => {
     if (p.publieLe.getTime() < limite) return false
     const texte = normaliser(`${p.titre} ${p.contenu}`)
-    if (ANTI_SIGNAUX.some((a) => texte.includes(a))) return false
-    return SIGNAUX.some((s) => texte.includes(s))
+    // La majorite des posts n'a aucun signal : on le cherche d'abord pour eviter
+    // de scanner les anti-signaux sur des posts qui seront de toute facon rejetes.
+    const aUnSignal = REGEX_SIGNAUX.some((r) => r.test(texte))
+    if (!aUnSignal) return false
+    return !REGEX_ANTI_SIGNAUX.some((r) => r.test(texte))
   })
 }
