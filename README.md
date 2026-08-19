@@ -404,6 +404,15 @@ Ce qu'elle regarde, un bloc par domaine :
 alors que le job tourne toutes les 15 minutes est la preuve qu'une tache ne se declenche
 plus - c'est exactement ce qu'aucune autre verification ne montre.
 
+Ce bloc recoupe ce que les blocs Verrous et Taches ont deja etabli, pour qu'un `!!`
+veuille toujours dire quelque chose : un log sans ligne de fin **pendant qu'un run
+tourne** (verrou tenu, ou tache declaree en cours par le Planificateur) reste `OK`, et
+un log absent pour une tache **jamais declenchee** est un `--` - l'etat normal des
+premieres heures apres l'installation, et l'etat permanent d'une tache hebdomadaire
+installee en milieu de semaine. Restent en `!!` les deux cas qui signalent vraiment
+quelque chose : un log absent pour une tache qui s'est deja executee, et un log sans
+fin de run alors qu'aucun run ne tourne.
+
 Trois garanties, par construction :
 
 - **Elle n'appelle jamais Reddit.** Le budget tolere est d'une requete par minute (voir
