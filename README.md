@@ -17,16 +17,30 @@ de commentaire a la place de quelqu'un.
 - Reddit (API officielle, plusieurs subreddits dev mobile)
 - Hacker News
 - Stack Overflow
-- Bluesky
+- Bluesky (necessite `BLUESKY_ID`/`BLUESKY_APP_PASSWORD`, facultatifs - voir tableau
+  ci-dessous ; sans eux, la source se desactive proprement)
 - Mastodon
-- Flux RSS/forums (dont les annonces Apple/Google elles-memes, pour detecter les nouvelles
-  exigences de publication avant qu'elles ne debordent en vague de questions)
+- Annonces Apple/Google elles-memes (`jobs/triggers.ts`, flux distinct des sources
+  ci-dessus - detecte une nouvelle exigence de publication avant qu'elle ne deborde
+  en vague de questions)
 
 **Facebook et LinkedIn sont volontairement absents.** Ni l'un ni l'autre n'expose d'API de
 recherche de posts publics accessible a un outil tiers. La seule facon d'y detecter des
 prospects serait de scraper les pages, ce qui viole leurs conditions d'utilisation et
 expose le compte utilise a un bannissement pur et simple. Le risque (perte du compte,
 image degradee) depasse largement la valeur d'une source supplementaire.
+
+**Un flux "forums" (forums.expo.dev + developer.apple.com/forums) a existe puis a ete
+retire.** Verifie en appel reel : les deux flux sont morts - Expo redirige entierement
+vers Discord (aucune API RSS n'y existe), et Apple bloque les requetes automatisees
+derriere une verification anti-bot. Aucun flux de remplacement fonctionnel n'a ete
+trouve pour ce role. Si tu en trouves un a l'avenir, il se cablerait dans
+`collecteursParDefaut()` (`src/collectors/index.ts`).
+
+Une source qui renvoie 0 post alors que d'autres en renvoient est un signal fort de
+flux casse (redirection HTML, changement de format d'API...) : elle est journalisee
+immediatement et comptee dans le bilan hebdomadaire (`weekly`), pour qu'une panne
+comme celle du flux Expo ci-dessus ne dure jamais plusieurs mois sans etre vue.
 
 ## Installation
 
@@ -47,10 +61,11 @@ Node 24 execute directement les fichiers `.ts` (aucune compilation ni ts-node ne
 | `REDDIT_USER_AGENT` | Chaine libre, format recommande `riveska-radar/0.1 by /u/TonPseudo` (Reddit bannit les user-agents generiques). |
 | `TELEGRAM_BOT_TOKEN` | Parler a [@BotFather](https://t.me/BotFather) sur Telegram, `/newbot`, suivre les instructions. Le token est renvoye a la fin. |
 | `TELEGRAM_CHAT_ID` | Envoyer un premier message au bot cree, puis appeler `https://api.telegram.org/bot<TOKEN>/getUpdates` dans un navigateur : le `chat.id` apparait dans la reponse JSON. |
-| `GOOGLE_SA_EMAIL` / `GOOGLE_SA_PRIVATE_KEY` | Dans un projet Google Cloud (nommer le projet `riveska`) : IAM & Admin > Comptes de service > Creer > generer une cle JSON. `email` et `private_key` viennent de ce fichier JSON (coller la cle avec ses `\n` echappes, tel quel). **Il faut aussi activer l'API Google Sheets** sur ce meme projet (API et services > Activer des API > "Google Sheets API"), sinon toute requete echoue avec une erreur 403. |
+| `GOOGLE_SA_EMAIL` / `GOOGLE_SA_PRIVATE_KEY` | Dans un projet Google Cloud (nommer le projet `riveska`) : IAM & Admin > Comptes de service > Creer > generer une cle JSON. `email` et `private_key` viennent de ce fichier JSON. **`GOOGLE_SA_PRIVATE_KEY` DOIT etre entre guillemets doubles**, tel quel sur une seule ligne, `\n` litteraux (pas de vrais retours a la ligne) - exemple exact : `GOOGLE_SA_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvQ...\n-----END PRIVATE KEY-----\n"`. **Sans les guillemets, la valeur est coupee au premier retour a la ligne** (mesure : 27 caracteres au lieu de ~1700, `BEGIN` present mais `END` absent) et devient invalide sans qu'aucune erreur ne le signale au moment de coller - `config.ts` bloque desormais au demarrage avec un message explicite si `BEGIN`/`END` sont absents apres lecture, mais autant l'eviter directement. **Il faut aussi activer l'API Google Sheets** sur ce meme projet (API et services > Activer des API > "Google Sheets API"), sinon toute requete echoue avec une erreur 403. |
 | `SHEET_ID` | L'identifiant dans l'URL du Google Sheet : `https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit`. Le Sheet doit exister au prealable. |
 | (partage du Sheet) | **Partager le Sheet en acces Editeur avec l'email du compte de service** (`GOOGLE_SA_EMAIL`, ex. `xxx@riveska.iam.gserviceaccount.com`). Sans ce partage, toutes les ecritures/lectures echouent silencieusement (voir Depannage). |
 | `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys), creer une cle. |
+| `BLUESKY_ID` / `BLUESKY_APP_PASSWORD` | **Facultatifs.** Reglages Bluesky > Confidentialite et securite > Mots de passe d'application > en creer un (gratuit, jamais le mot de passe du compte lui-meme). `BLUESKY_ID` est ton identifiant (`toi.bsky.social`). Necessaires depuis que la recherche Bluesky non authentifiee est fermee (verifie : 403 sur l'endpoint public). Absents ou incomplets -> la source Bluesky se desactive proprement (log explicite, aucune erreur), les cinq autres sources continuent normalement. |
 
 ## Commandes npm
 
@@ -82,7 +97,14 @@ et peut legitimement prendre plus longtemps : ~40 appels Reddit sequentiels + ju
 appels LLM par candidat), le nouveau lancement s'arrete immediatement avec un avertissement
 plutot que de scorer/facturer deux fois les memes posts. Un verrou dont le process n'existe
 plus (crash, redemarrage) est automatiquement considere perime au lancement suivant - il
-n'y a jamais besoin de le supprimer a la main.
+n'y a jamais besoin de le supprimer a la main. Le verrou se rafraichit automatiquement
+toutes les 5 minutes tant que le run est en cours (pour ne jamais paraitre perime a tort
+sur un run legitimement long) et verifie qu'il s'appartient encore avant de se liberer.
+
+Un post abandonne definitivement (3 echecs techniques consecutifs a la meme etape -
+scoring, enrichissement ou ecriture Sheet) declenche desormais une notification Telegram
+avec son URL, pour pouvoir le rattraper a la main : avant, un post deja facture en LLM
+pouvait disparaitre sans aucun temoin.
 
 ## Suivi 48h (`recheck`) : couverture partielle, assumee
 
@@ -97,10 +119,9 @@ qui exposent une API publique adaptee :
 | Stack Overflow | oui (`answer_count`, API StackExchange) |
 | Bluesky | non |
 | Mastodon | non |
-| Forums (RSS) | non |
 
-Bluesky, Mastodon et les forums suivis par RSS n'exposent pas d'equivalent simple et sans
-cle pour compter les reponses a un post precis : ces prospects ne declenchent jamais la
+Bluesky et Mastodon n'exposent pas d'equivalent simple et sans cle pour compter les
+reponses a un post precis : ces prospects ne declenchent jamais la
 notification "toujours sans reponse apres 48h", meme s'ils restent effectivement sans
 reponse. Ce n'est pas un bug silencieux : c'est une limite connue, documentee ici plutot
 que de laisser croire a une couverture universelle.
@@ -133,7 +154,10 @@ en direct) et applique une rotation simple : au-dela de 5 Mo, l'ancien contenu e
 en `<commande>.log.1` (une seule generation, ecrasee a chaque rotation) et le job repart
 d'un fichier vide - le disque d'un mini PC ne sature jamais sur un job relance toutes les
 15 minutes sans surveillance. Ces fichiers sont ouvrables avec Notepad ou VS Code
-(encodage UTF-16, normal pour une redirection PowerShell).
+(encodage UTF-16LE avec BOM - octets verifies en execution reelle - c'est le defaut
+de PowerShell 5.1 pour `*>>` comme pour `Out-File` sans `-Encoding` explicite ; les
+deux chemins d'ecriture de `lancer-job.ps1` restent volontairement sur ce meme defaut
+pour ne jamais melanger deux encodages dans le meme fichier).
 
 `lancer-job.ps1` resout le chemin de `node` a **chaque execution**, pas seulement a
 l'installation : une mise a jour de Node qui change son emplacement ne casse donc pas les
@@ -188,9 +212,25 @@ calculer un taux de reponse hebdomadaire.
 
 ## Donnees personnelles
 
-Le radar ne stocke que ce qui est deja public : le **pseudo** de l'auteur et l'**URL**
-du post. Jamais d'adresse email, jamais de nom civil. La base locale est purgee
-automatiquement selon `RETENTION_DAYS`.
+Aucune des deux ne stocke jamais d'email ni de nom civil : uniquement le **pseudo**
+public de l'auteur et ce qu'il a ecrit publiquement. Mais les deux endroits qui
+stockent des donnees suivent des regles DIFFERENTES - c'est important de le savoir :
+
+- **Base locale (`radar.db`, SQLite)** : id du post, pseudo, URL, score, compteurs
+  internes. **Purgee automatiquement** selon `RETENTION_DAYS` (90 jours par defaut) -
+  `purger()` tourne a chaque run `radar`.
+- **Google Sheet** : les 13 colonnes decrites plus haut, dont un extrait de 300
+  caracteres du post d'origine, sa traduction, le brouillon de reponse et tes propres
+  notes. **N'est PAS purge automatiquement.** `RETENTION_DAYS` ne s'applique qu'a la
+  base locale - le Sheet est ton outil de travail (CRM), les lignes y restent tant
+  que tu ne les supprimes pas toi-meme.
+
+Un nettoyage automatique du Sheet n'a volontairement pas ete implemente : supprimer
+des lignes dans ton outil de travail sans confirmation humaine est plus risque que de
+laisser l'historique s'accumuler (perte accidentelle d'un prospect encore utile en
+cours de reponse, concurrence avec tes propres editions manuelles/mobiles au moment
+de la suppression) - un choix delibere, pas un oubli. Si tu veux purger le Sheet,
+trie par `date_detect` et supprime les lignes anciennes a la main de temps en temps.
 
 **Toujours repondre publiquement, dans le fil du post - jamais en message prive non
 sollicite.** Un message prive non sollicite a but commercial constitue du demarchage
@@ -201,8 +241,9 @@ le meme probleme - elle vaut plus qu'un message prive, pas moins.
 
 ## Cout mensuel
 
-Toutes les sources de collecte (Reddit, Hacker News, Stack Overflow, Bluesky, Mastodon,
-RSS) et Telegram sont gratuites. Google Sheets est gratuit dans les volumes de cet outil.
+Toutes les sources de collecte (Reddit, Hacker News, Stack Overflow, Bluesky, Mastodon)
+et Telegram sont gratuites - le mot de passe d'application Bluesky aussi. Google Sheets
+est gratuit dans les volumes de cet outil.
 Seul le LLM (OpenRouter) coute reellement : de l'ordre de **3 a 8 EUR par mois** selon le
 volume de posts collectes et le modele choisi (`OPENROUTER_MODEL`).
 
