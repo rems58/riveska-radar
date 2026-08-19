@@ -21,12 +21,20 @@ export interface OptionsRequete {
   timeoutMs?: number
 }
 
+export interface ReponseTexte {
+  texte: string | null
+  /** Code HTTP recu, ou null si la requete n'a jamais abouti (timeout, DNS, reseau...). */
+  statut: number | null
+}
+
 /**
- * Recupere le corps texte d'une URL, avec timeout et limite de taille.
- * Ne leve jamais : une panne (reseau, timeout, taille, statut HTTP) est journalisee
- * puis renvoie null. C'est la fonction de bas niveau ; recupererJson s'appuie dessus.
+ * Version bas niveau de recupererTexte qui expose aussi le code HTTP recu, pour les
+ * appelants qui doivent reagir differemment selon le statut (ex: reddit-rss.ts, qui
+ * retente une fois specifiquement sur 429 - un rate-limit n'appelle pas la meme
+ * reponse qu'un 404 ou une panne reseau). Ne leve jamais, memes garanties que
+ * recupererTexte (timeout, taille bornee, journalisation).
  */
-export async function recupererTexte(o: OptionsRequete): Promise<string | null> {
+async function recupererTexteAvecStatutInterne(o: OptionsRequete): Promise<ReponseTexte> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), o.timeoutMs ?? TIMEOUT_DEFAUT_MS)
   try {
@@ -34,7 +42,7 @@ export async function recupererTexte(o: OptionsRequete): Promise<string | null> 
 
     if (!r.ok) {
       console.warn(`[radar] ${o.source} : reponse HTTP ${r.status} pour ${o.url}`)
-      return null
+      return { texte: null, statut: r.status }
     }
 
     const longueurAnnoncee = r.headers.get('content-length')
@@ -42,25 +50,44 @@ export async function recupererTexte(o: OptionsRequete): Promise<string | null> 
       console.warn(
         `[radar] ${o.source} : reponse trop volumineuse (${longueurAnnoncee} octets annonces) pour ${o.url}`,
       )
-      return null
+      return { texte: null, statut: r.status }
     }
 
     const texte = await r.text()
     const octetsLus = Buffer.byteLength(texte, 'utf8')
     if (octetsLus > TAILLE_MAX_OCTETS) {
       console.warn(`[radar] ${o.source} : reponse trop volumineuse (${octetsLus} octets lus) pour ${o.url}`)
-      return null
+      return { texte: null, statut: r.status }
     }
 
-    return texte
+    return { texte, statut: r.status }
   } catch (err) {
     const raison = err instanceof Error ? err.message : String(err)
     console.warn(`[radar] ${o.source} : echec de requete vers ${o.url} (${raison})`)
-    return null
+    return { texte: null, statut: null }
   } finally {
     // Sans ce nettoyage le timer peut maintenir le process eveille meme apres reponse.
     clearTimeout(timer)
   }
+}
+
+/**
+ * Recupere le corps texte d'une URL, avec timeout et limite de taille.
+ * Ne leve jamais : une panne (reseau, timeout, taille, statut HTTP) est journalisee
+ * puis renvoie null. C'est la fonction de bas niveau ; recupererJson s'appuie dessus.
+ */
+export async function recupererTexte(o: OptionsRequete): Promise<string | null> {
+  return (await recupererTexteAvecStatutInterne(o)).texte
+}
+
+/**
+ * Comme recupererTexte, mais renvoie aussi le code HTTP recu (voir ReponseTexte).
+ * Reservee aux appelants qui ont besoin de distinguer les codes d'echec (ex: 429
+ * "reessayer plus tard" vs 404 "n'existera jamais") - la plupart des collecteurs
+ * n'en ont pas besoin et utilisent recupererTexte/recupererJson.
+ */
+export async function recupererTexteAvecStatut(o: OptionsRequete): Promise<ReponseTexte> {
+  return recupererTexteAvecStatutInterne(o)
 }
 
 /** Comme recupererTexte, mais parse le resultat en JSON. Ne leve jamais. */

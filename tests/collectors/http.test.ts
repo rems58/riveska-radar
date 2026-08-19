@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   recupererTexte,
+  recupererTexteAvecStatut,
   recupererJson,
   decoderEntitesHtml,
   versAuteur,
@@ -79,6 +80,28 @@ describe('recupererTexte / recupererJson (couche http commune)', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ a: 1 }), { status: 200 })))
     const resultat = await recupererJson<{ a: number }>({ source: 'test', url: 'https://x/y' })
     expect(resultat).toEqual({ a: 1 })
+  })
+})
+
+describe('recupererTexteAvecStatut', () => {
+  it('renvoie le texte et le statut en cas de succes', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('contenu', { status: 200 })))
+    const r = await recupererTexteAvecStatut({ source: 'test', url: 'https://x/y' })
+    expect(r).toEqual({ texte: 'contenu', statut: 200 })
+  })
+
+  it('renvoie le statut (ex: 429) meme en cas d echec HTTP, texte null', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('too many requests', { status: 429 })))
+    const r = await recupererTexteAvecStatut({ source: 'test', url: 'https://x/y' })
+    expect(r).toEqual({ texte: null, statut: 429 })
+  })
+
+  it('renvoie un statut null si la requete n a jamais abouti (panne reseau)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('DNS injoignable')))
+    const r = await recupererTexteAvecStatut({ source: 'test', url: 'https://x/y' })
+    expect(r).toEqual({ texte: null, statut: null })
   })
 })
 
