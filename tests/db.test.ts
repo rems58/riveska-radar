@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
-import { ouvrirDb, type RadarDb } from '../src/db.ts'
+import { ouvrirDb, statistiquesDb, MAX_ECHECS_TECHNIQUES, type RadarDb } from '../src/db.ts'
 
 describe('RadarDb', () => {
   let db: RadarDb
@@ -198,6 +198,123 @@ describe('RadarDb', () => {
         // Sous Windows, better-sqlite3 garde un verrou sur le fichier tant que le process
         // vit (RadarDb n'expose pas de close()) : le nettoyage est best-effort, pas critique
         // puisqu'il s'agit d'un dossier temporaire genere par mkdtempSync.
+        try {
+          rmSync(dir, { recursive: true, force: true })
+        } catch {
+          // ignore
+        }
+      }
+    })
+  })
+
+  describe('statistiquesDb (commande sante)', () => {
+    /**
+     * Cette fonction ouvre le FICHIER en lecture seule : elle ne peut donc pas etre
+     * testee sur une base ':memory:' comme le reste de ce fichier.
+     */
+    function surFichier(remplir: (db: RadarDb) => void, verifier: (chemin: string) => void): void {
+      const dir = mkdtempSync(path.join(tmpdir(), 'radar-sante-'))
+      const chemin = path.join(dir, 'radar.db')
+      try {
+        remplir(ouvrirDb(chemin))
+        verifier(chemin)
+      } finally {
+        // Verrou Windows de better-sqlite3 : nettoyage best-effort (cf. test de migration).
+        try {
+          rmSync(dir, { recursive: true, force: true })
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    it('compte les posts vus et la date du dernier ajout', () => {
+      const vieux = new Date(Date.now() - 3 * 24 * 3600 * 1000)
+      surFichier(
+        (db) => {
+          db.marquerVu({ id: 'hn:1', auteur: 'bob', url: 'u1', score: 80, vuLe: vieux })
+          db.marquerVu({ id: 'hn:2', auteur: 'ana', url: 'u2', score: 90 })
+        },
+        (chemin) => {
+          const s = statistiquesDb(chemin)
+          expect(s.posts).toBe(2)
+          expect(s.dernierAjout!.getTime()).toBeGreaterThan(vieux.getTime())
+        },
+      )
+    })
+
+    it('separe les echecs en attente de retry des abandons definitifs', () => {
+      surFichier(
+        (db) => {
+          db.enregistrerEchec({ id: 'hn:retry', auteur: 'bob', url: 'u1' })
+          for (let i = 0; i < MAX_ECHECS_TECHNIQUES; i++) {
+            db.enregistrerEchec({ id: 'hn:abandon', auteur: 'ana', url: 'u2' })
+          }
+        },
+        (chemin) => {
+          const s = statistiquesDb(chemin)
+          expect(s.enAttenteRetry).toBe(1)
+          expect(s.abandons).toBe(1)
+          // vu_le est reecrit a chaque echec : cet abandon vient donc d'avoir lieu.
+          expect(s.abandonsRecents).toBe(1)
+        },
+      )
+    })
+
+    it('ne compte pas comme recent un abandon de plus de 7 jours', () => {
+      surFichier(
+        (db) => {
+          for (let i = 0; i < MAX_ECHECS_TECHNIQUES; i++) {
+            db.enregistrerEchec({ id: 'hn:vieux', auteur: 'ana', url: 'u2' })
+          }
+        },
+        (chemin) => {
+          // Vieillit la ligne comme l'aurait fait le temps qui passe (enregistrerEchec
+          // reecrit toujours vu_le a maintenant).
+          const brut = new Database(chemin)
+          brut.prepare('UPDATE posts_vus SET vu_le = ?').run(Date.now() - 30 * 24 * 3600 * 1000)
+          brut.close()
+
+          const s = statistiquesDb(chemin)
+          expect(s.abandons).toBe(1)
+          expect(s.abandonsRecents).toBe(0)
+        },
+      )
+    })
+
+    it('leve sur une base absente (jamais de creation implicite par une verification)', () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'radar-sante-'))
+      try {
+        expect(() => statistiquesDb(path.join(dir, 'inexistante.db'))).toThrow()
+        // Et surtout : le fichier n'a pas ete cree par la tentative.
+        expect(existsSync(path.join(dir, 'inexistante.db'))).toBe(false)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('tolere une base anterieure a la colonne echecs', () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'radar-sante-'))
+      const fichier = path.join(dir, 'radar.db')
+      try {
+        const ancienne = new Database(fichier)
+        ancienne.exec(`
+          CREATE TABLE posts_vus (
+            id TEXT PRIMARY KEY, auteur TEXT NOT NULL, url TEXT NOT NULL,
+            score INTEGER NOT NULL, vu_le INTEGER NOT NULL,
+            recheck_le INTEGER, recheck_fait INTEGER NOT NULL DEFAULT 0
+          );
+        `)
+        ancienne
+          .prepare('INSERT INTO posts_vus (id, auteur, url, score, vu_le, recheck_fait) VALUES (?,?,?,?,?,0)')
+          .run('hn:ancien', 'bob', 'u', 80, Date.now())
+        ancienne.close()
+
+        const s = statistiquesDb(fichier)
+        expect(s.posts).toBe(1)
+        expect(s.enAttenteRetry).toBe(0)
+        expect(s.abandons).toBe(0)
+      } finally {
         try {
           rmSync(dir, { recursive: true, force: true })
         } catch {

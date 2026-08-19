@@ -42,8 +42,10 @@ function lire(cheminVerrou: string): ContenuVerrou | null {
 /**
  * process.kill(pid, 0) n'envoie aucun signal : il verifie juste que le process
  * existe. Fonctionne aussi sous Windows (Node l'implemente via OpenProcess).
+ * Exporte pour jobs/sante.ts, qui doit distinguer "un run tourne vraiment" d'un
+ * verrou orphelin sans pour autant acquerir ni modifier quoi que ce soit.
  */
-function processVivant(pid: number): boolean {
+export function processVivant(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true

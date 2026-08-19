@@ -68,6 +68,54 @@ export interface RadarDb {
 /** Nombre d'echecs techniques toleres avant d'abandonner definitivement un post. */
 export const MAX_ECHECS_TECHNIQUES = 3
 
+export interface StatsDb {
+  posts: number
+  dernierAjout: Date | null
+  /** Posts en echec technique (1 a 2), en attente d'une nouvelle tentative au prochain run. */
+  enAttenteRetry: number
+  /** Posts abandonnes definitivement (MAX_ECHECS_TECHNIQUES echecs a la meme etape). */
+  abandons: number
+  /** Abandons des 7 derniers jours : les seuls qui signalent une panne en cours. */
+  abandonsRecents: number
+}
+
+const SEPT_JOURS_MS = 7 * 24 * 3600 * 1000
+
+/**
+ * Photographie de la base pour la commande "sante". Ouvre en LECTURE SEULE et sans
+ * creer le fichier : une verification de sante ne doit jamais fabriquer une base
+ * vide la ou il n'y en a pas, ni appliquer la migration de schema d'ouvrirDb.
+ * Leve si le fichier est absent ou corrompu - l'appelant en fait une ligne "!!".
+ */
+export function statistiquesDb(chemin: string): StatsDb {
+  const db = new Database(chemin, { readonly: true, fileMustExist: true })
+  try {
+    // Une base creee avant l'ajout de la colonne echecs n'a pas ce compteur, et une
+    // ouverture en lecture seule ne peut pas la migrer : on rend alors des compteurs
+    // a zero plutot que de faire echouer toute la verification sur ce detail.
+    const colonnes = db.prepare('PRAGMA table_info(posts_vus)').all() as { name: string }[]
+    const avecEchecs = colonnes.some((c) => c.name === 'echecs')
+
+    const total = db.prepare('SELECT COUNT(*) AS n, MAX(vu_le) AS dernier FROM posts_vus').get() as {
+      n: number
+      dernier: number | null
+    }
+
+    const compter = (clause: string, ...params: number[]): number =>
+      avecEchecs ? (db.prepare(`SELECT COUNT(*) AS n FROM posts_vus WHERE ${clause}`).get(...params) as { n: number }).n : 0
+
+    return {
+      posts: total.n,
+      dernierAjout: total.dernier === null ? null : new Date(total.dernier),
+      enAttenteRetry: compter('echecs BETWEEN 1 AND ?', MAX_ECHECS_TECHNIQUES - 1),
+      abandons: compter('echecs >= ?', MAX_ECHECS_TECHNIQUES),
+      abandonsRecents: compter('echecs >= ? AND vu_le >= ?', MAX_ECHECS_TECHNIQUES, Date.now() - SEPT_JOURS_MS),
+    }
+  } finally {
+    db.close()
+  }
+}
+
 /**
  * Ouvre (et cree si besoin) la base locale du radar.
  * Ne stocke que des donnees publiques : pseudo, URL, score. Jamais d'email ni de nom civil.
