@@ -120,8 +120,14 @@ export async function executerRadar(d: DepsRadar): Promise<ResultatRadar> {
       })
       retenus++
     } catch (err) {
+      // "Les couches basses ne levent jamais" est une garantie de CONCEPTION, pas
+      // d'execution : un bug de programmation (undefined.prop, regression future)
+      // leve quand meme. Sans ce compte, un post qui declenche systematiquement une
+      // exception reviendrait a chaque run et refacturerait un appel LLM a chaque
+      // fois - boucle de facturation infinie. Le plafond de MAX_ECHECS_TECHNIQUES
+      // s'applique donc ici exactement comme sur les retours null.
       const raison = err instanceof Error ? err.message : String(err)
-      console.warn(`[radar] pipeline : post ${c.id} abandonne (${raison})`)
+      signalerEchecTechnique(d.db, c, `exception : ${raison}`)
     }
   }
 

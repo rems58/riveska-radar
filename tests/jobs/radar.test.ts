@@ -108,6 +108,26 @@ describe('executerRadar', () => {
     expect(logAbandon).toBeDefined()
   })
 
+  it('plafonne les tentatives meme quand noter leve une exception (boucle de facturation)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const db = ouvrirDb(':memory:')
+    const noter = vi.fn(async () => {
+      throw new Error('bug de code, pas une panne reseau')
+    })
+    const base = deps({ db, collecter: async () => [raw('reddit:a')], noter })
+
+    // 8 runs avec noter qui leve a chaque fois : sans le fix, 8 appels factures.
+    for (let i = 0; i < 8; i++) {
+      await executerRadar(base)
+    }
+
+    expect(noter).toHaveBeenCalledTimes(3)
+    expect(db.dejaVu('reddit:a')).toBe(true)
+
+    const logAbandon = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('abandonne'))
+    expect(logAbandon).toBeDefined()
+  })
+
   it('memorise le post retenu pour ne pas le retraiter', async () => {
     const d = deps()
     await executerRadar(d)
