@@ -138,6 +138,30 @@ describe('executerTriggers', () => {
     expect(notifier).toHaveBeenCalledTimes(3)
   })
 
+  it('traite un flux Atom (le blog Android Developers, remplacement du flux 404) comme un flux RSS', async () => {
+    // Forme reelle d'un flux Blogger/Atom (verifiee en appel reel le 2026-08-19) :
+    // <link> est une balise auto-fermante avec href, pas un texte entre <link>...</link>.
+    const xmlAtom =
+      "<?xml version='1.0'?><feed xmlns='http://www.w3.org/2005/Atom'><entry>" +
+      "<title type='text'>Upcoming requirement: apps must target API 35</title>" +
+      "<published>2026-08-01T10:00:00.000-07:00</published>" +
+      "<link rel='replies' href='https://android-developers.googleblog.com/comments'/>" +
+      "<link rel='alternate' type='text/html' href='https://android-developers.googleblog.com/2026/08/api35.html'/>" +
+      "</entry></feed>"
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string) =>
+        Promise.resolve(new Response(url.includes('googleblog') ? xmlAtom : CHANNEL_VIDE, { status: 200 })),
+      ),
+    )
+    const db = ouvrirDb(':memory:')
+    const notifier = vi.fn(async (_texte: string) => true)
+    const r = await executerTriggers({ db, notifier })
+    expect(r.nouvelles).toBe(1)
+    expect(notifier.mock.calls[0]![0]).toContain('API 35')
+    expect(notifier.mock.calls[0]![0]).toContain('api35.html')
+  })
+
   it('ignore un item sans lien exploitable', async () => {
     const xml = `<?xml version="1.0"?><rss><channel><item>
       <title>New requirement for all apps</title>

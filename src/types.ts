@@ -2,7 +2,7 @@
 export interface RawPost {
   /** Identifiant stable et unique, prefixe par la source : "reddit:t3_abc123" */
   id: string
-  source: 'reddit' | 'hackernews' | 'stackoverflow' | 'bluesky' | 'mastodon' | 'forum'
+  source: 'reddit' | 'hackernews' | 'stackoverflow' | 'bluesky' | 'mastodon'
   url: string
   auteur: string
   titre: string

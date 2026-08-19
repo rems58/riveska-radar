@@ -1,14 +1,20 @@
 import type { RadarDb } from '../db.ts'
 import { MAX_ECHECS_TECHNIQUES } from '../db.ts'
 import { recupererTexte } from '../collectors/http.ts'
-import { extraireBlocsItem, extraireBalise } from '../collectors/rss.ts'
+import { extraireBlocsItem, extraireBalise, extraireLien } from '../collectors/rss.ts'
 import { normaliser } from '../filter/keywords.ts'
 
-/** Flux Apple + Google surveilles pour detecter une nouvelle exigence de publication. */
+/**
+ * Flux Apple + Google surveilles pour detecter une nouvelle exigence de publication.
+ * developer.android.com/feeds/androiddevelopers.xml (l'URL d'origine) renvoie 404
+ * depuis - verifie en appel reel le 2026-08-19. Remplace par le flux Atom du blog
+ * Android Developers (meme contenu editorial, format Atom : confirme <entry> non vide,
+ * 25 items lors de la verification), qui exerce le support Atom ajoute a extraireLien.
+ */
 export const FLUX_PLATEFORMES: string[] = [
   'https://developer.apple.com/news/releases/rss/releases.rss',
   'https://developer.apple.com/news/rss/news.rss',
-  'https://developer.android.com/feeds/androiddevelopers.xml',
+  'https://android-developers.googleblog.com/feeds/posts/default',
 ]
 
 /**
@@ -50,7 +56,7 @@ export async function executerTriggers(d: DepsTriggers): Promise<ResultatTrigger
 
     for (const bloc of extraireBlocsItem(xml)) {
       const titre = extraireBalise(bloc, 'title')
-      const lien = extraireBalise(bloc, 'link')
+      const lien = extraireLien(bloc)
       if (!titre || !lien) continue
 
       const id = `trigger:${lien}`

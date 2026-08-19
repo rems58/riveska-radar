@@ -16,6 +16,18 @@ function nombreOptionnel(valeurDefaut: number) {
 }
 
 /**
+ * Meme logique que nombreOptionnel, pour une chaine facultative : un .env qui
+ * declare la variable vide (BLUESKY_ID=) doit se comporter comme une variable
+ * absente, pas comme une chaine vide truthy passee plus loin dans le pipeline.
+ */
+function chaineOptionnelle() {
+  return z.preprocess(
+    (valeur) => (typeof valeur === 'string' && valeur.trim() === '' ? undefined : valeur),
+    z.string().optional(),
+  )
+}
+
+/**
  * Restaure les \n echappes (stockage .env sur une ligne) en vrais sauts de ligne,
  * puis verifie que le resultat ressemble a une cle PEM complete. Mesure reelle :
  * une cle collee SANS guillemets doubles dans le .env est coupee au premier retour
@@ -53,6 +65,11 @@ const schema = z.object({
   SCORE_THRESHOLD: nombreOptionnel(60),
   MAX_POST_AGE_DAYS: nombreOptionnel(30),
   RETENTION_DAYS: nombreOptionnel(90),
+  // Facultatifs : la recherche Bluesky non authentifiee renvoie 403 (verifie en
+  // reel le 2026-08-19, endpoint public.api.bsky.app) - sans ces identifiants,
+  // le collecteur se desactive proprement plutot que d'echouer a chaque run.
+  BLUESKY_ID: chaineOptionnelle(),
+  BLUESKY_APP_PASSWORD: chaineOptionnelle(),
 })
 
 export interface Config {
@@ -70,6 +87,10 @@ export interface Config {
   scoreThreshold: number
   maxPostAgeDays: number
   retentionDays: number
+  /** Facultatif : absent -> le collecteur Bluesky se desactive proprement (voir README). */
+  blueskyId?: string
+  /** Mot de passe d'application Bluesky (pas le mot de passe du compte), facultatif. */
+  blueskyAppPassword?: string
 }
 
 export function parseConfig(env: Record<string, string | undefined>): Config {
@@ -91,6 +112,8 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
     scoreThreshold: v.SCORE_THRESHOLD,
     maxPostAgeDays: v.MAX_POST_AGE_DAYS,
     retentionDays: v.RETENTION_DAYS,
+    blueskyId: v.BLUESKY_ID,
+    blueskyAppPassword: v.BLUESKY_APP_PASSWORD,
   }
 }
 

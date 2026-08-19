@@ -1,16 +1,21 @@
-import type { RawPost } from '../types.ts'
-import { recupererTexte, decoderEntitesHtml, versAuteur, dateValideOuNull } from './http.ts'
+import { decoderEntitesHtml } from './http.ts'
 
-/** Flux RSS de forums surveilles. */
-export const FLUX_FORUMS = [
-  'https://forums.expo.dev/latest.rss',
-  'https://developer.apple.com/forums/feed/app-store-distribution',
-]
+/**
+ * Utilitaires de parsing RSS/Atom, sans dependance XML : partages par tout
+ * consommateur de flux (aujourd'hui : src/jobs/triggers.ts, qui surveille les
+ * annonces Apple/Google). Volontairement tolerants : un flux mal forme ne doit
+ * jamais lever.
+ *
+ * Il n'y a plus de collecteur "forum" ici : les deux flux qui l'alimentaient
+ * (forums.expo.dev/latest.rss, developer.apple.com/forums/feed/app-store-distribution)
+ * sont morts, verifie en appel reel le 2026-08-19 - Expo redirige entierement vers
+ * Discord (qui n'expose aucune API RSS), et Apple bloque les requetes automatisees
+ * derriere une verification anti-bot (redirection vers /forums/verify-human/).
+ * Aucun flux de remplacement fonctionnel n'a ete trouve pour ce role. Voir README.
+ */
 
 /**
  * Extrait le contenu d'une balise XML, en gerant les sections CDATA.
- * Exportee pour etre reutilisee par tout consommateur de flux RSS/Atom
- * (ex: src/jobs/triggers.ts) sans dupliquer ce parsing.
  */
 export function extraireBalise(bloc: string, tag: string): string | null {
   const re = new RegExp(`<${tag}[^>]*>\\s*(?:<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>|([\\s\\S]*?))\\s*</${tag}>`, 'i')
@@ -21,76 +26,34 @@ export function extraireBalise(bloc: string, tag: string): string | null {
 }
 
 /**
- * Extrait les blocs <item>...</item> d'un flux RSS. Exportee pour la meme raison
- * qu'extraireBalise : eviter de recopier cette regex ailleurs.
+ * Extrait les blocs <item>...</item> (RSS) ET <entry>...</entry> (Atom) d'un flux.
+ * Un flux donne n'utilise jamais les deux formats a la fois : additionner les deux
+ * recherches est donc sans risque et couvre les deux cas sans avoir a detecter le
+ * format en amont. Sans le support Atom, un flux Atom valide (ex: les blogs Blogger/
+ * Google, format par defaut) rendait silencieusement 0 item.
  */
 export function extraireBlocsItem(xml: string): string[] {
-  return xml.match(/<item[^>]*>[\s\S]*?<\/item>/gi) ?? []
+  const items = xml.match(/<item[^>]*>[\s\S]*?<\/item>/gi) ?? []
+  const entrees = xml.match(/<entry[^>]*>[\s\S]*?<\/entry>/gi) ?? []
+  return [...items, ...entrees]
 }
 
 /**
- * Parse un flux RSS sans dependance XML : extrait les blocs <item> puis leurs
- * balises usuelles. Volontairement tolerant : un flux mal forme ne doit jamais lever.
- *
- * Cas particulier de la date : un pubDate absent est un cas legitime (beaucoup de
- * forums l'omettent) et retombe sur la date courante, valide par construction.
- * En revanche un pubDate present mais illisible (garbage) est rejete : on ignore
- * le post plutot que de laisser filer une Invalid Date.
+ * Extrait l'URL "lisible" d'un bloc <item> (RSS) ou <entry> (Atom).
+ * RSS : <link>URL en texte</link>.
+ * Atom : plusieurs <link .../> auto-fermantes avec un attribut href ; on prend
+ * celle marquee rel="alternate" (la page HTML), ou a defaut la premiere avec un href -
+ * un <link> Atom n'a jamais de contenu texte, extraireBalise (qui cherche une balise
+ * fermante) ne peut donc jamais l'extraire seul.
  */
-function parserRss(xml: string): RawPost[] {
-  const posts: RawPost[] = []
-  const items = extraireBlocsItem(xml)
+export function extraireLien(bloc: string): string | null {
+  const texte = extraireBalise(bloc, 'link')
+  if (texte) return texte
 
-  for (const bloc of items) {
-    const lien = extraireBalise(bloc, 'link')
-    if (!lien) continue
-
-    const titre = extraireBalise(bloc, 'title') ?? ''
-    const description = extraireBalise(bloc, 'description') ?? ''
-    const pubDate = extraireBalise(bloc, 'pubDate')
-    const auteur = versAuteur(extraireBalise(bloc, 'dc:creator'))
-
-    let publieLe: Date | null
-    if (pubDate === null) {
-      publieLe = new Date()
-    } else {
-      publieLe = dateValideOuNull(new Date(pubDate))
-      if (!publieLe) {
-        console.warn(`[radar] forum : item "${titre}" ignore (pubDate illisible : ${pubDate})`)
-        continue
-      }
-    }
-
-    posts.push({
-      id: `forum:${lien}`,
-      source: 'forum',
-      url: lien,
-      auteur,
-      titre,
-      contenu: description,
-      publieLe,
-    })
-  }
-  return posts
-}
-
-/**
- * Recupere et parse les flux RSS des forums surveilles.
- * Toute panne unitaire est avalee : un flux indisponible ou trop volumineux ne casse pas la collecte.
- */
-export async function collecterRss(): Promise<RawPost[]> {
-  const vus = new Set<string>()
-  const posts: RawPost[] = []
-
-  for (const flux of FLUX_FORUMS) {
-    const xml = await recupererTexte({ source: 'forum', url: flux })
-    if (xml === null) continue
-
-    for (const p of parserRss(xml)) {
-      if (vus.has(p.id)) continue
-      vus.add(p.id)
-      posts.push(p)
-    }
-  }
-  return posts
+  const liens = bloc.match(/<link\b[^>]*\/?>/gi) ?? []
+  const alternatif = liens.find((l) => /rel=["']alternate["']/i.test(l))
+  const choisi = alternatif ?? liens[0]
+  if (!choisi) return null
+  const m = /href=["']([^"']+)["']/i.exec(choisi)
+  return m?.[1] ?? null
 }

@@ -2,68 +2,136 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { collecterBluesky } from '../../src/collectors/bluesky.ts'
 import { collecterMastodon } from '../../src/collectors/mastodon.ts'
-import { collecterRss, FLUX_FORUMS } from '../../src/collectors/rss.ts'
 
 afterEach(() => vi.restoreAllMocks())
 
 describe('collecterBluesky', () => {
-  it('convertit une reponse searchPosts en RawPost', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({
-        posts: [{
-          uri: 'at://did:plc:xyz/app.bsky.feed.post/rkey1',
-          author: { handle: 'dev.bsky.social' },
-          record: { text: 'my app got rejected again', createdAt: '2026-08-01T10:00:00Z' },
-        }],
-      }), { status: 200 }),
-    ))
+  it('se desactive proprement (log explicite, tableau vide) sans identifiants', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
     const posts = await collecterBluesky()
-    const p = posts[0]!
-    expect(p.source).toBe('bluesky')
-    expect(p.auteur).toBe('dev.bsky.social')
-    expect(p.url).toBe('https://bsky.app/profile/dev.bsky.social/post/rkey1')
+
+    expect(posts).toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(String(warnSpy.mock.calls[0]![0])).toContain('BLUESKY_ID')
+  })
+
+  it('se desactive aussi si un seul des deux identifiants est fourni', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const posts = await collecterBluesky({ id: 'moi.bsky.social' })
+
+    expect(posts).toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('ouvre une session puis interroge searchPosts avec le token obtenu', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('createSession')) {
+        return Promise.resolve(new Response(JSON.stringify({ accessJwt: 'jwt-de-test' }), { status: 200 }))
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            posts: [{
+              uri: 'at://did:plc:xyz/app.bsky.feed.post/rkey1',
+              author: { handle: 'dev.bsky.social' },
+              record: { text: 'my app got rejected again', createdAt: '2026-08-01T10:00:00Z' },
+            }],
+          }),
+          { status: 200 },
+        ),
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const posts = await collecterBluesky({ id: 'moi.bsky.social', appPassword: 'xxxx-xxxx-xxxx-xxxx' })
+
+    expect(posts).toHaveLength(1)
+    expect(posts[0]!.auteur).toBe('dev.bsky.social')
+
+    const appelSession = fetchMock.mock.calls.find((c) => String(c[0]).includes('createSession'))!
+    expect(appelSession[1]?.method).toBe('POST')
+    const corps = JSON.parse(String(appelSession[1]?.body))
+    expect(corps).toEqual({ identifier: 'moi.bsky.social', password: 'xxxx-xxxx-xxxx-xxxx' })
+
+    const appelRecherche = fetchMock.mock.calls.find((c) => String(c[0]).includes('searchPosts'))!
+    expect((appelRecherche[1]?.headers as Record<string, string>).Authorization).toBe('Bearer jwt-de-test')
+  })
+
+  it('renvoie un tableau vide (et journalise) si l authentification echoue', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 401 })))
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const posts = await collecterBluesky({ id: 'moi.bsky.social', appPassword: 'mauvais' })
+
+    expect(posts).toEqual([])
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('authentification'))).toBe(true)
   })
 
   it('un auteur null ne fait pas perdre les autres posts de la reponse', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({
-        posts: [
-          {
-            uri: 'at://did:plc:supprime/app.bsky.feed.post/rkeyA',
-            author: null,
-            record: { text: 'compte supprime', createdAt: '2026-08-01T10:00:00Z' },
-          },
-          {
-            uri: 'at://did:plc:xyz/app.bsky.feed.post/rkeyB',
-            author: { handle: 'dev.bsky.social' },
-            record: { text: 'my app got rejected again', createdAt: '2026-08-01T10:00:00Z' },
-          },
-        ],
-      }), { status: 200 }),
-    ))
-    const posts = await collecterBluesky()
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('createSession')) {
+        return Promise.resolve(new Response(JSON.stringify({ accessJwt: 'jwt' }), { status: 200 }))
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            posts: [
+              {
+                uri: 'at://did:plc:supprime/app.bsky.feed.post/rkeyA',
+                author: null,
+                record: { text: 'compte supprime', createdAt: '2026-08-01T10:00:00Z' },
+              },
+              {
+                uri: 'at://did:plc:xyz/app.bsky.feed.post/rkeyB',
+                author: { handle: 'dev.bsky.social' },
+                record: { text: 'my app got rejected again', createdAt: '2026-08-01T10:00:00Z' },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const posts = await collecterBluesky({ id: 'moi.bsky.social', appPassword: 'xxxx' })
     expect(posts).toHaveLength(2)
     const sansAuteur = posts.find((p) => p.id === 'bluesky:rkeyA')
     expect(sansAuteur).toBeDefined()
     expect(sansAuteur!.auteur).toBe('inconnu')
-    expect(sansAuteur!.auteur).not.toBeNull()
     expect(posts.find((p) => p.id === 'bluesky:rkeyB')).toBeDefined()
   })
 
   it('ignore un post dont l URI ne fournit aucun rkey exploitable', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({
-        posts: [{
-          uri: '',
-          author: { handle: 'dev.bsky.social' },
-          record: { text: 'uri malformee', createdAt: '2026-08-01T10:00:00Z' },
-        }],
-      }), { status: 200 }),
-    ))
-    const posts = await collecterBluesky()
-    expect(posts.some((p) => p.id === 'bluesky:')).toBe(false)
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('createSession')) {
+        return Promise.resolve(new Response(JSON.stringify({ accessJwt: 'jwt' }), { status: 200 }))
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            posts: [{
+              uri: '',
+              author: { handle: 'dev.bsky.social' },
+              record: { text: 'uri malformee', createdAt: '2026-08-01T10:00:00Z' },
+            }],
+          }),
+          { status: 200 },
+        ),
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const posts = await collecterBluesky({ id: 'moi.bsky.social', appPassword: 'xxxx' })
     expect(posts).toEqual([])
   })
 })
@@ -97,51 +165,5 @@ describe('collecterMastodon', () => {
     ))
     const posts = await collecterMastodon()
     expect(posts[0]!.auteur).toBe('inconnu')
-  })
-})
-
-describe('collecterRss', () => {
-  it('surveille au moins un forum', () => {
-    expect(FLUX_FORUMS.length).toBeGreaterThan(0)
-  })
-
-  it('parse un flux RSS minimal', async () => {
-    const xml = `<?xml version="1.0"?><rss><channel>
-      <item>
-        <title>App rejected 4.2.6</title>
-        <link>https://forum.example/t/1</link>
-        <description>Need help publishing</description>
-        <pubDate>Fri, 01 Aug 2026 10:00:00 GMT</pubDate>
-      </item>
-    </channel></rss>`
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(xml, { status: 200 })))
-    const posts = await collecterRss()
-    expect(posts.length).toBeGreaterThan(0)
-    expect(posts[0]!.titre).toBe('App rejected 4.2.6')
-    expect(posts[0]!.url).toBe('https://forum.example/t/1')
-    expect(posts[0]!.source).toBe('forum')
-  })
-
-  it('renvoie un tableau vide sans tout charger si le flux depasse la limite de taille', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const xmlEnorme =
-      `<?xml version="1.0"?><rss><channel><item><title>t</title>` +
-      `<link>https://forum.example/t/1</link><description>${'x'.repeat(6_000_000)}</description>` +
-      `</item></channel></rss>`
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(xmlEnorme, { status: 200 })))
-    const posts = await collecterRss()
-    expect(posts).toEqual([])
-  })
-
-  it('decode un titre double-echappe sans le transformer en balise reelle', async () => {
-    const xml = `<?xml version="1.0"?><rss><channel>
-      <item>
-        <title>&amp;lt;code&amp;gt;</title>
-        <link>https://forum.example/t/2</link>
-      </item>
-    </channel></rss>`
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(xml, { status: 200 })))
-    const posts = await collecterRss()
-    expect(posts[0]!.titre).toBe('&lt;code&gt;')
   })
 })
