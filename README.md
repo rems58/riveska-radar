@@ -1,5 +1,46 @@
 # Riveska Radar
 
+**Pipeline de veille automatisée en Node.js / TypeScript.** Le radar surveille 24/7 six sources
+publiques, détecte les développeurs bloqués sur la publication de leur application mobile,
+note chaque post avec un LLM, prépare un brouillon de réponse et pousse le tout dans un
+Google Sheet avec alertes Telegram. Un humain relit toujours avant tout envoi.
+
+> Outil interne conçu et développé seul en août 2026 pour la prospection de Riveska,
+> exploité en continu sur un mini PC Windows via le Planificateur de tâches.
+
+## En chiffres
+
+| | |
+|---|---|
+| Tests | 316 cas Vitest sur 24 fichiers |
+| Sources | Hacker News, Stack Overflow, Mastodon, Bluesky, Reddit (RSS), annonces Apple/Google |
+| Langues détectées | 5 |
+| Coût d'exploitation | 3 à 8 € par mois (LLM uniquement) |
+
+## Stack
+
+Node.js (TypeScript exécuté nativement) · Zod · SQLite (better-sqlite3) · Google Sheets API
+(compte de service) · Telegram Bot API · OpenRouter (LLM) · Vitest
+
+## Points techniques
+
+- **Architecture en pipeline** : `collectors/` → `filter/` (mots-clés, préfiltre) →
+  `enrich/` (score, langue, brouillon par LLM) → `sinks/` (Sheets, Telegram), orchestrée par
+  des jobs indépendants (`radar`, `reddit`, `recheck`, `triggers`, `weekly`, `sante`).
+- **Robustesse en production** : verrou de process par fichier (PID + horodatage, détection
+  des verrous périmés), déduplication en SQLite, respect strict des limites de débit
+  (60 s entre deux requêtes Reddit, mesuré), commande `sante` de diagnostic.
+- **Sécurité LLM** : le contenu tiers est délimité et déclaré comme donnée, jamais comme
+  instruction (défense contre l'injection de prompt), sorties bornées par Zod.
+- **Respect des plateformes** : aucune API fermée contournée, aucun scraping interdit par les
+  conditions d'utilisation (choix documentés ci-dessous), rien n'est jamais publié
+  automatiquement.
+- **Données personnelles** : minimisation et durée de conservation documentées.
+
+---
+
+## Documentation technique
+
 Outil interne qui detecte, 24/7, les developpeurs bloques sur la publication de leur
 application mobile (rejet App Store/Play Store, galere de testeurs, exigence Apple/Google
 mal comprise...) et les fait remonter dans un Google Sheet, avec un brouillon de reponse
